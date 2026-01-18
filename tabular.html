@@ -1,0 +1,1522 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Tabular SGCRL - Four Rooms Maze</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: 'Segoe UI', system-ui, sans-serif;
+            background: #0a0a0f;
+            color: #e0e0e0;
+            overflow: hidden;
+        }
+        #container {
+            display: grid;
+            grid-template-columns: 1fr 1fr 320px;
+            height: 100vh;
+            gap: 1px;
+            background: #2a2a3a;
+        }
+        .panel {
+            background: #12121a;
+            position: relative;
+            overflow: hidden;
+            border: 1px solid #2a2a3a;
+            box-shadow: inset 0 0 30px rgba(0,0,0,0.3);
+        }
+        .panel-title {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            background: rgba(0,0,0,0.7);
+            padding: 6px 12px;
+            border-radius: 4px;
+            font-size: 0.85em;
+            z-index: 10;
+        }
+        #sidebar {
+            padding: 20px;
+            overflow-y: auto;
+        }
+        h1 { font-size: 1.2em; margin-bottom: 16px; }
+        h2 { font-size: 1em; margin: 16px 0 8px 0; color: #88aaff; }
+        p { font-size: 0.85em; line-height: 1.5; color: #aaa; margin-bottom: 8px; }
+        .controls { margin: 12px 0; }
+        button {
+            background: #3355aa;
+            color: white;
+            border: none;
+            padding: 10px 16px;
+            margin: 3px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 0.85em;
+        }
+        button:hover { background: #4466cc; }
+        button.active { background: #44aa66; }
+        .slider-container { margin: 12px 0; }
+        .slider-container label { display: block; font-size: 0.8em; margin-bottom: 4px; }
+        input[type="range"] { width: 100%; accent-color: #5588ff; }
+        .stats {
+            background: #1a1a24;
+            padding: 12px;
+            border-radius: 6px;
+            font-family: monospace;
+            font-size: 0.8em;
+            margin: 12px 0;
+        }
+        .stats div { margin: 4px 0; display: flex; justify-content: space-between; }
+        .stat-value { color: #8abb9a; }
+        #maze-canvas { width: 100%; height: 100%; }
+        .colorbar {
+            position: absolute;
+            right: 10px;
+            top: 50%;
+            transform: translateY(-50%);
+            width: 20px;
+            height: 200px;
+            border-radius: 4px;
+            /* Matches actual gradient: slate blue (high c) to coral (low c) */
+            background: linear-gradient(to bottom, #5a78a0, #6a7090, #8a7080, #a06a6a, #b4645a);
+            box-shadow: 0 2px 8px rgba(0,0,0,0.3);
+        }
+        .colorbar-label {
+            position: absolute;
+            right: 35px;
+            font-size: 0.7em;
+            color: #888;
+        }
+        .colorbar-label.top { top: 50%; transform: translateY(-150px); }
+        .colorbar-label.bottom { top: 50%; transform: translateY(140px); }
+        select {
+            background: #2a2a3a;
+            color: white;
+            border: 1px solid #444;
+            padding: 6px;
+            border-radius: 4px;
+            width: 100%;
+            margin: 4px 0;
+        }
+    </style>
+</head>
+<body>
+    <div id="container">
+        <!-- Maze View -->
+        <div class="panel" id="maze-panel">
+            <div class="panel-title">Maze: ψ-similarity to goal</div>
+            <canvas id="maze-canvas"></canvas>
+            <div class="colorbar"></div>
+            <div class="colorbar-label top">c=1 (goal)</div>
+            <div class="colorbar-label bottom">c=0 (ζ)</div>
+        </div>
+
+        <!-- Representation View (Three.js) -->
+        <div class="panel" id="repr-panel">
+            <div class="panel-title" id="repr-title">Representation Space: c vs ||ζ||</div>
+        </div>
+
+        <!-- Sidebar -->
+        <div class="panel" id="sidebar">
+            <h1>Tabular SGCRL</h1>
+            <p>Real InfoNCE updates on Four Rooms maze. Watch representations evolve.</p>
+
+            <div class="controls">
+                <button id="btn-play">▶ Play</button>
+                <button id="btn-reset">Reset</button>
+                <button id="btn-step">+1 Gradient</button>
+                <button id="btn-episode">+1 Episode</button>
+            </div>
+
+            <div class="slider-container">
+                <label>Speed</label>
+                <input type="range" id="speed-slider" min="1" max="20" value="10">
+            </div>
+
+            <div class="slider-container">
+                <label>Representation Dim: <span id="dim-value">64</span></label>
+                <input type="range" id="dim-slider" min="3" max="64" value="64">
+            </div>
+
+            <div class="controls">
+                <button id="btn-view-pca3d" class="active">3D PCA</button>
+                <button id="btn-view-pca2d">2D PCA</button>
+                <button id="btn-view-magnitude">2D ||ζ||</button>
+            </div>
+
+            <h2>Color Legend</h2>
+            <p style="font-size: 0.8em;">
+                <span style="color: #6699bb;">●</span> Goal state<br>
+                <span style="color: #5a9a7a;">●</span> Start state<br>
+                <span style="color: #5a78a0;">●</span> High c (near goal)<br>
+                <span style="color: #b4645a;">●</span> Low c (squeezed)<br>
+                <span style="color: #6ab07a;">―</span> Success path<br>
+                <span style="color: #bba866;">―</span> Failed path
+            </p>
+
+            <div class="stats">
+                <div><span>Episode:</span><span class="stat-value" id="stat-episode">0</span></div>
+                <div><span>Total Steps:</span><span class="stat-value" id="stat-steps">0</span></div>
+                <div><span>Successes:</span><span class="stat-value" id="stat-success">0</span></div>
+                <div><span>Success Rate:</span><span class="stat-value" id="stat-success-rate">0%</span></div>
+                <div><span>Avg ψ-sim (all):</span><span class="stat-value" id="stat-avg-sim">0.00</span></div>
+                <div><span>Goal ψ-sim:</span><span class="stat-value" id="stat-goal-sim">1.00</span></div>
+                <div><span>InfoNCE Loss:</span><span class="stat-value" id="stat-loss">0.00</span></div>
+                <div><span>Goal in batch:</span><span class="stat-value" id="stat-goal-batch">0</span></div>
+                <div><span>Trajs with goal:</span><span class="stat-value" id="stat-goal-trajs">0</span></div>
+            </div>
+
+            <div class="stats" id="hover-info" style="display: none;">
+                <div style="color: #aaa; margin-bottom: 4px;">Hovered State:</div>
+                <div><span>Position:</span><span class="stat-value" id="hover-pos">-</span></div>
+                <div><span>c (goal sim):</span><span class="stat-value" id="hover-c">-</span></div>
+                <div><span>||ζ||:</span><span class="stat-value" id="hover-zeta">-</span></div>
+            </div>
+
+            <h2>How It Works</h2>
+            <p>1. Agent collects trajectories using softmax policy on ψ(s')·ψ(g)</p>
+            <p>2. InfoNCE updates representations - optimization follows variance</p>
+            <p>3. Visited states get squeezed toward ζ subspace</p>
+            <p>4. Unvisited states retain goal-similarity → exploration pressure</p>
+
+            <h2>Legend (2D/3D View)</h2>
+            <p><span style="color: #6699bb;">●</span> Goal ψ(g) at (0, 1)</p>
+            <p><span style="color: #5a9a7a;">●</span> Start state</p>
+            <p style="color: #777;">Points lie on unit circle: c² + ||ζ||² = 1</p>
+        </div>
+    </div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+    <script>
+        // ============================================
+        // MATH UTILITIES
+        // ============================================
+        const MathUtils = {
+            randomVector(dim) {
+                const v = [];
+                for (let i = 0; i < dim; i++) v.push((Math.random() - 0.5) * 2);
+                return v;
+            },
+
+            normalize(v) {
+                let norm = 0;
+                for (let i = 0; i < v.length; i++) norm += v[i] * v[i];
+                norm = Math.sqrt(norm) + 1e-8;
+                for (let i = 0; i < v.length; i++) v[i] /= norm;
+            },
+
+            dot(a, b) {
+                let sum = 0;
+                for (let i = 0; i < a.length; i++) sum += a[i] * b[i];
+                return sum;
+            },
+
+            softmax(logits) {
+                const maxVal = Math.max(...logits);
+                const exps = logits.map(l => Math.exp(l - maxVal));
+                const sum = exps.reduce((a, b) => a + b, 0);
+                return exps.map(e => e / sum);
+            }
+        };
+
+        // Shorthand references for convenience
+        const { randomVector, normalize, dot, softmax } = MathUtils;
+
+        // ============================================
+        // FOUR ROOMS ENVIRONMENT
+        // ============================================
+        class FourRoomsEnv {
+            constructor(height = 11, width = 11, goalPos = [10, 10], startPos = [0, 0]) {
+                this.height = height;
+                this.width = width;
+                this.goalPos = goalPos;
+                this.startPos = startPos;
+                this.numStates = height * width;
+                this.numActions = 5; // stay, down, up, right, left
+                this.actions = [[0,0], [1,0], [-1,0], [0,1], [0,-1]];
+
+                this.goalState = this.posToState(goalPos[0], goalPos[1]);
+                this.startState = this.posToState(startPos[0], startPos[1]);
+
+                this.walls = this._buildWalls();
+            }
+
+            _buildWalls() {
+                const walls = [];
+                for (let i = 0; i < this.height; i++) {
+                    walls[i] = [];
+                    for (let j = 0; j < this.width; j++) {
+                        walls[i][j] = 0;
+                    }
+                }
+
+                // Horizontal wall
+                for (let j = 0; j < this.width; j++) {
+                    walls[Math.floor(this.height/2)][j] = 1;
+                }
+                // Vertical wall
+                for (let i = 0; i < this.height; i++) {
+                    walls[i][Math.floor(this.width/2)] = 1;
+                }
+
+                // Doors
+                const doorLen = 2;
+                for (let d = 0; d < doorLen; d++) {
+                    walls[Math.floor(this.height/2)][Math.floor(this.width/4) + d] = 0;
+                    walls[Math.floor(this.height/2)][Math.floor(3*this.width/4) + d] = 0;
+                    walls[Math.floor(this.height/4) + d][Math.floor(this.width/2)] = 0;
+                    walls[Math.floor(3*this.height/4) + d][Math.floor(this.width/2)] = 0;
+                }
+
+                return walls;
+            }
+
+            posToState(i, j) { return i * this.width + j; }
+            stateToPos(s) { return [Math.floor(s / this.width), s % this.width]; }
+
+            isWall(i, j) {
+                return this.walls[i] && this.walls[i][j] === 1;
+            }
+
+            step(state, action) {
+                const [i, j] = this.stateToPos(state);
+                const [di, dj] = this.actions[action];
+                const ni = i + di, nj = j + dj;
+                if (ni >= 0 && ni < this.height && nj >= 0 && nj < this.width && !this.isWall(ni, nj)) {
+                    return this.posToState(ni, nj);
+                }
+                return state;
+            }
+
+            isGoal(state) {
+                return state === this.goalState;
+            }
+        }
+
+        // ============================================
+        // REPRESENTATION INTERFACE
+        // (Abstract base - swap this for neural network)
+        // ============================================
+        class RepresentationBase {
+            constructor(repDim, goalState) {
+                this.repDim = repDim;
+                this.goalState = goalState;
+                this.psiGoal = null;
+            }
+
+            // Must implement in subclass
+            init() { throw new Error('Not implemented'); }
+            getRepresentation(state) { throw new Error('Not implemented'); }
+            getGoalRepresentation() { return this.psiGoal; }
+            applyGradients(sBatch, spBatch, anchorGrads, positiveGrads, lr) { throw new Error('Not implemented'); }
+            normalizeAll() { throw new Error('Not implemented'); }
+            fixGoalRepresentation() { throw new Error('Not implemented'); }
+
+            goalSimilarity(state) {
+                return dot(this.getRepresentation(state), this.psiGoal);
+            }
+        }
+
+        // ============================================
+        // TABULAR REPRESENTATION
+        // ============================================
+        class TabularRepresentation extends RepresentationBase {
+            constructor(numStates, repDim, goalState) {
+                super(repDim, goalState);
+                this.numStates = numStates;
+                this.psi = null;
+            }
+
+            init() {
+                this.psi = [];
+
+                // Initialize goal representation randomly, normalize
+                this.psiGoal = randomVector(this.repDim);
+                normalize(this.psiGoal);
+
+                // Initialize all states near goal (symmetric init from paper)
+                // "ψ(s) = x + ε(s), with global seed x shared across states"
+                for (let s = 0; s < this.numStates; s++) {
+                    const v = this.psiGoal.slice();
+                    for (let d = 0; d < this.repDim; d++) {
+                        v[d] += (Math.random() - 0.5) * 0.2;
+                    }
+                    normalize(v);
+                    this.psi[s] = v;
+                }
+
+                // Set goal state representation exactly
+                this.psi[this.goalState] = this.psiGoal.slice();
+            }
+
+            getRepresentation(state) {
+                return this.psi[state];
+            }
+
+            applyGradients(sBatch, spBatch, anchorGrads, positiveGrads, lr) {
+                // Apply anchor updates
+                for (let i = 0; i < sBatch.length; i++) {
+                    const s = sBatch[i];
+                    for (let d = 0; d < this.repDim; d++) {
+                        this.psi[s][d] += lr * anchorGrads[i][d];
+                    }
+                }
+
+                // Apply positive updates
+                for (let j = 0; j < spBatch.length; j++) {
+                    const sp = spBatch[j];
+                    for (let d = 0; d < this.repDim; d++) {
+                        this.psi[sp][d] += lr * positiveGrads[j][d];
+                    }
+                }
+            }
+
+            normalizeAll() {
+                for (let s = 0; s < this.numStates; s++) {
+                    normalize(this.psi[s]);
+                }
+            }
+
+            fixGoalRepresentation() {
+                for (let d = 0; d < this.repDim; d++) {
+                    this.psi[this.goalState][d] = this.psiGoal[d];
+                }
+            }
+        }
+
+        // ============================================
+        // INFONCE LOSS MODULE
+        // ============================================
+        const InfoNCE = {
+            computeLossAndGradients(psiS, psiP, repDim) {
+                const B = psiS.length;
+
+                // Compute dot products
+                const dots = [];
+                for (let i = 0; i < B; i++) {
+                    dots[i] = [];
+                    for (let j = 0; j < B; j++) {
+                        dots[i][j] = dot(psiS[i], psiP[j]);
+                    }
+                }
+
+                // Column-wise softmax
+                const P = [];
+                for (let i = 0; i < B; i++) P[i] = new Array(B);
+
+                for (let j = 0; j < B; j++) {
+                    let maxVal = -Infinity;
+                    for (let i = 0; i < B; i++) maxVal = Math.max(maxVal, dots[i][j]);
+
+                    let sumExp = 0;
+                    for (let i = 0; i < B; i++) {
+                        P[i][j] = Math.exp(dots[i][j] - maxVal);
+                        sumExp += P[i][j];
+                    }
+                    for (let i = 0; i < B; i++) P[i][j] /= sumExp;
+                }
+
+                // Compute loss
+                let loss = 0;
+                for (let i = 0; i < B; i++) {
+                    loss -= Math.log(P[i][i] + 1e-12);
+                }
+                loss /= B;
+
+                // Compute anchor gradients: Δψ(s_i) = Σ_j (δ_ij - P_ij) * ψ(sp_j)
+                const anchorGrads = [];
+                for (let i = 0; i < B; i++) {
+                    const grad = new Array(repDim).fill(0);
+                    for (let j = 0; j < B; j++) {
+                        const coeff = (i === j ? 1 : 0) - P[i][j];
+                        for (let d = 0; d < repDim; d++) {
+                            grad[d] += coeff * psiP[j][d];
+                        }
+                    }
+                    anchorGrads.push(grad);
+                }
+
+                // Compute positive gradients: Δψ(sp_j) = ψ(s_j) - Σ_i P_ij * ψ(s_i)
+                const positiveGrads = [];
+                for (let j = 0; j < B; j++) {
+                    const expected = new Array(repDim).fill(0);
+                    for (let i = 0; i < B; i++) {
+                        for (let d = 0; d < repDim; d++) {
+                            expected[d] += P[i][j] * psiS[i][d];
+                        }
+                    }
+                    const grad = new Array(repDim);
+                    for (let d = 0; d < repDim; d++) {
+                        grad[d] = psiS[j][d] - expected[d];
+                    }
+                    positiveGrads.push(grad);
+                }
+
+                return { loss, anchorGrads, positiveGrads, P };
+            }
+        };
+
+        // ============================================
+        // SGCRL AGENT
+        // ============================================
+        class SGCRLAgent {
+            constructor(env, representation, config = {}) {
+                this.env = env;
+                this.repr = representation;
+
+                this.replayCapacity = config.replayCapacity || 200;
+                this.batchSize = config.batchSize || 64;
+                this.gamma = config.gamma || 0.99;
+                this.lr = config.lr || 0.02;
+                this.entropyCoeff = config.entropyCoeff || 0.1;
+                this.maxSteps = config.maxSteps || 50;
+
+                this.replay = [];
+                this.visitCounts = new Array(env.numStates).fill(0);
+                this.goalInBatchCount = 0;
+            }
+
+            init() {
+                this.repr.init();
+                this.replay = [];
+                this.visitCounts = new Array(this.env.numStates).fill(0);
+                this.goalInBatchCount = 0;
+            }
+
+            selectAction(state) {
+                const psiGoal = this.repr.getGoalRepresentation();
+                const similarities = [];
+
+                for (let a = 0; a < this.env.numActions; a++) {
+                    const ns = this.env.step(state, a);
+                    similarities.push(dot(this.repr.getRepresentation(ns), psiGoal));
+                }
+
+                // Softmax with temperature
+                const invTemp = 1.0 / this.entropyCoeff;
+                const maxSim = Math.max(...similarities);
+                const expSims = similarities.map(s => Math.exp((s - maxSim) * invTemp));
+                const sumExp = expSims.reduce((a, b) => a + b, 0);
+                const probs = expSims.map(e => e / sumExp);
+
+                // Sample from distribution
+                const r = Math.random();
+                let cumsum = 0;
+                for (let a = 0; a < this.env.numActions; a++) {
+                    cumsum += probs[a];
+                    if (r < cumsum) return a;
+                }
+                return this.env.numActions - 1;
+            }
+
+            collectEpisode() {
+                const traj = [this.env.startState];
+                let success = false;
+
+                for (let t = 0; t < this.maxSteps; t++) {
+                    const action = this.selectAction(traj[traj.length - 1]);
+                    const ns = this.env.step(traj[traj.length - 1], action);
+                    traj.push(ns);
+                    this.visitCounts[ns]++;
+
+                    if (this.env.isGoal(ns)) {
+                        success = true;
+                        break;
+                    }
+                }
+
+                this.replay.push(traj);
+                if (this.replay.length > this.replayCapacity) this.replay.shift();
+
+                return { traj, success };
+            }
+
+            sampleBatch() {
+                const sBatch = [], spBatch = [];
+
+                for (let b = 0; b < this.batchSize; b++) {
+                    const trajIdx = Math.floor(Math.random() * this.replay.length);
+                    const traj = this.replay[trajIdx];
+                    if (traj.length < 2) continue;
+
+                    const i = Math.floor(Math.random() * (traj.length - 1));
+                    const remaining = traj.length - i - 1;
+                    if (remaining < 1) continue;
+
+                    // Geometric distribution for future state
+                    const weights = [];
+                    for (let k = 0; k < remaining; k++) {
+                        weights.push(Math.pow(this.gamma, k));
+                    }
+                    const sumW = weights.reduce((a, b) => a + b, 0);
+                    const r = Math.random() * sumW;
+                    let cumsum = 0, offset = 1;
+                    for (let k = 0; k < remaining; k++) {
+                        cumsum += weights[k];
+                        if (r < cumsum) { offset = k + 1; break; }
+                    }
+                    const j = i + offset;
+
+                    sBatch.push(traj[i]);
+                    spBatch.push(traj[j]);
+                }
+
+                return { sBatch, spBatch };
+            }
+
+            updateRepresentations() {
+                if (this.replay.length < 2) return 0;
+
+                const { sBatch, spBatch } = this.sampleBatch();
+                if (sBatch.length === 0) return 0;
+
+                // Gather embeddings
+                const psiS = sBatch.map(s => this.repr.getRepresentation(s).slice());
+                const psiP = spBatch.map(s => this.repr.getRepresentation(s).slice());
+
+                // Compute loss and gradients
+                const { loss, anchorGrads, positiveGrads } = InfoNCE.computeLossAndGradients(
+                    psiS, psiP, this.repr.repDim
+                );
+
+                // Track if goal is in batch
+                const goalInSp = spBatch.filter(s => s === this.env.goalState).length;
+                if (goalInSp > 0) this.goalInBatchCount++;
+
+                // Apply gradients
+                this.repr.applyGradients(sBatch, spBatch, anchorGrads, positiveGrads, this.lr);
+
+                // Normalize and fix goal
+                this.repr.normalizeAll();
+                this.repr.fixGoalRepresentation();
+
+                return loss;
+            }
+        }
+
+        // ============================================
+        // INSTANTIATE MODULES
+        // ============================================
+        let REP_DIM = 64;
+        const env = new FourRoomsEnv();
+        let representation = new TabularRepresentation(env.numStates, REP_DIM, env.goalState);
+        let agent = new SGCRLAgent(env, representation, {
+            replayCapacity: 200,
+            batchSize: 64,
+            gamma: 0.99,
+            lr: 0.02,
+            entropyCoeff: 0.1,
+            maxSteps: 50
+        });
+
+        // Legacy aliases for visualization code
+        const HEIGHT = env.height, WIDTH = env.width;
+        const GOAL_POS = env.goalPos, START_POS = env.startPos;
+        const walls = env.walls;
+        const NUM_STATES = env.numStates, NUM_ACTIONS = env.numActions;
+        const GOAL_STATE = env.goalState, START_STATE = env.startState;
+
+        function posToState(i, j) { return env.posToState(i, j); }
+        function stateToPos(s) { return env.stateToPos(s); }
+        function step(state, action) { return env.step(state, action); }
+
+        // Legacy accessors for representation
+        function goalSimilarity(state) { return representation.goalSimilarity(state); }
+        function getRepresentation(state) { return representation.getRepresentation(state); }
+        function getPsiGoal() { return representation.psiGoal; }
+
+        // For visualization compatibility
+        let psi, psiGoal;
+        function syncLegacyRefs() {
+            psi = representation.psi;
+            psiGoal = representation.psiGoal;
+        }
+
+        let goalInBatchCount = 0;
+        let replay = [];
+
+        function initAgent() {
+            agent.init();
+            syncLegacyRefs();
+            replay = agent.replay;
+            goalInBatchCount = 0;
+        }
+
+        function collectEpisode() {
+            const result = agent.collectEpisode();
+            replay = agent.replay;
+            return result;
+        }
+
+        function updateRepresentations() {
+            const loss = agent.updateRepresentations();
+            goalInBatchCount = agent.goalInBatchCount;
+            return loss;
+        }
+
+        // Exposed for visualization
+        let visitCounts = null;
+        function getVisitCounts() { return agent.visitCounts; }
+
+        // ============================================
+        // VISUALIZATION - MAZE
+        // ============================================
+        const mazeCanvas = document.getElementById('maze-canvas');
+        const mazeCtx = mazeCanvas.getContext('2d');
+        let currentTraj = [];
+        let currentTrajSuccess = false;
+        let hoveredState = -1; // -1 means no hover
+
+        function resizeMazeCanvas() {
+            const panel = document.getElementById('maze-panel');
+            mazeCanvas.width = panel.clientWidth;
+            mazeCanvas.height = panel.clientHeight;
+        }
+
+        function valueToColor(v, mode) {
+            // v in [-1, 1] for similarity, [0, 1] for others
+            if (mode === 'similarity') {
+                // Red (high) -> Yellow -> Green -> Blue (low)
+                const t = (v + 1) / 2; // map to [0, 1]
+                if (t > 0.66) {
+                    const u = (t - 0.66) / 0.34;
+                    return `rgb(${255}, ${Math.floor(255 * (1-u))}, 0)`;
+                } else if (t > 0.33) {
+                    const u = (t - 0.33) / 0.33;
+                    return `rgb(${Math.floor(255 * u)}, 255, 0)`;
+                } else {
+                    const u = t / 0.33;
+                    return `rgb(0, ${Math.floor(255 * u)}, ${Math.floor(255 * (1-u))})`;
+                }
+            } else {
+                // Simple blue to red gradient
+                const t = Math.min(1, Math.max(0, v));
+                return `rgb(${Math.floor(255 * t)}, 0, ${Math.floor(255 * (1-t))})`;
+            }
+        }
+
+        function drawMaze() {
+            const cellW = mazeCanvas.width / WIDTH;
+            const cellH = mazeCanvas.height / HEIGHT;
+
+            mazeCtx.fillStyle = '#12121a';
+            mazeCtx.fillRect(0, 0, mazeCanvas.width, mazeCanvas.height);
+
+            // Draw cells - same coloring as 3D view
+            for (let i = 0; i < HEIGHT; i++) {
+                for (let j = 0; j < WIDTH; j++) {
+                    const x = j * cellW;
+                    const y = (HEIGHT - 1 - i) * cellH; // Flip Y
+                    const s = posToState(i, j);
+
+                    const isHovered = s === hoveredState;
+
+                    if (walls[i][j] === 1) {
+                        mazeCtx.fillStyle = '#2a2a35';
+                    } else if (s === START_STATE) {
+                        mazeCtx.fillStyle = '#5a9a7a'; // Muted teal - start
+                    } else {
+                        // Muted gradient - soft blue = close to goal, soft coral = squeezed
+                        const sim = goalSimilarity(s);
+                        const t = (sim + 1) / 2; // map [-1,1] to [0,1]
+                        // Muted palette: coral (180,100,90) to slate blue (90,120,160)
+                        const r = Math.floor(90 + 90 * (1 - t));
+                        const g = Math.floor(120 - 20 * (1 - t));
+                        const b = Math.floor(160 - 70 * (1 - t));
+                        mazeCtx.fillStyle = `rgb(${r}, ${g}, ${b})`;
+                    }
+                    mazeCtx.fillRect(x + 1, y + 1, cellW - 2, cellH - 2);
+
+                    // Diablo-style hover outline
+                    if (isHovered) {
+                        // Outer glow
+                        mazeCtx.strokeStyle = 'rgba(255, 170, 34, 0.3)';
+                        mazeCtx.lineWidth = 6;
+                        mazeCtx.strokeRect(x + 1, y + 1, cellW - 2, cellH - 2);
+                        // Mid glow
+                        mazeCtx.strokeStyle = 'rgba(255, 200, 68, 0.6)';
+                        mazeCtx.lineWidth = 3;
+                        mazeCtx.strokeRect(x + 2, y + 2, cellW - 4, cellH - 4);
+                        // Core outline
+                        mazeCtx.strokeStyle = '#ffcc44';
+                        mazeCtx.lineWidth = 1.5;
+                        mazeCtx.strokeRect(x + 3, y + 3, cellW - 6, cellH - 6);
+                    }
+                }
+            }
+
+            // Draw goal marker with glow
+            const [gi, gj] = stateToPos(GOAL_STATE);
+            const gx = (gj + 0.5) * cellW;
+            const gy = (HEIGHT - 1 - gi + 0.5) * cellH;
+            const goalRadius = cellW * 0.35;
+
+            // Outer glow rings
+            for (let r = 3; r >= 1; r--) {
+                mazeCtx.beginPath();
+                mazeCtx.arc(gx, gy, goalRadius + r * 4, 0, Math.PI * 2);
+                mazeCtx.strokeStyle = `rgba(102, 153, 187, ${0.15 / r})`;
+                mazeCtx.lineWidth = 3;
+                mazeCtx.stroke();
+            }
+
+            // Main goal circle
+            mazeCtx.fillStyle = '#6699bb';
+            mazeCtx.beginPath();
+            mazeCtx.arc(gx, gy, goalRadius, 0, Math.PI * 2);
+            mazeCtx.fill();
+
+            // Inner highlight
+            mazeCtx.beginPath();
+            mazeCtx.arc(gx, gy, goalRadius * 0.6, 0, Math.PI * 2);
+            mazeCtx.strokeStyle = 'rgba(170, 200, 220, 0.5)';
+            mazeCtx.lineWidth = 2;
+            mazeCtx.stroke();
+
+            // Outer ring
+            mazeCtx.beginPath();
+            mazeCtx.arc(gx, gy, goalRadius, 0, Math.PI * 2);
+            mazeCtx.strokeStyle = '#aaccdd';
+            mazeCtx.lineWidth = 2;
+            mazeCtx.stroke();
+
+            // Draw trajectory line on top
+            if (currentTraj.length > 1) {
+                const trajColor = currentTrajSuccess ? '#6ab07a' : '#bba866';
+
+                mazeCtx.strokeStyle = trajColor;
+                mazeCtx.lineWidth = 3;
+                mazeCtx.lineCap = 'round';
+                mazeCtx.lineJoin = 'round';
+                mazeCtx.beginPath();
+
+                for (let t = 0; t < currentTraj.length; t++) {
+                    const [ti, tj] = stateToPos(currentTraj[t]);
+                    const tx = (tj + 0.5) * cellW;
+                    const ty = (HEIGHT - 1 - ti + 0.5) * cellH;
+                    if (t === 0) mazeCtx.moveTo(tx, ty);
+                    else mazeCtx.lineTo(tx, ty);
+                }
+                mazeCtx.stroke();
+            }
+        }
+
+        // Update hover info panel
+        function updateHoverInfo() {
+            const hoverInfo = document.getElementById('hover-info');
+            if (hoveredState === -1) {
+                hoverInfo.style.display = 'none';
+            } else {
+                hoverInfo.style.display = 'block';
+                const [i, j] = stateToPos(hoveredState);
+                const c = goalSimilarity(hoveredState);
+                const zetaMag = Math.sqrt(Math.max(0, 1 - c * c));
+                document.getElementById('hover-pos').textContent = `(${i}, ${j})`;
+                document.getElementById('hover-c').textContent = c.toFixed(3);
+                document.getElementById('hover-zeta').textContent = zetaMag.toFixed(3);
+            }
+        }
+
+        // Maze mouse hover handling
+        mazeCanvas.addEventListener('mousemove', (e) => {
+            const rect = mazeCanvas.getBoundingClientRect();
+            const scaleX = mazeCanvas.width / rect.width;
+            const scaleY = mazeCanvas.height / rect.height;
+            const x = (e.clientX - rect.left) * scaleX;
+            const y = (e.clientY - rect.top) * scaleY;
+
+            const cellW = mazeCanvas.width / WIDTH;
+            const cellH = mazeCanvas.height / HEIGHT;
+
+            const j = Math.floor(x / cellW);
+            const i = HEIGHT - 1 - Math.floor(y / cellH); // Flip Y
+
+            if (i >= 0 && i < HEIGHT && j >= 0 && j < WIDTH && walls[i][j] === 0) {
+                const newHovered = posToState(i, j);
+                if (newHovered !== hoveredState) {
+                    hoveredState = newHovered;
+                    drawMaze();
+                    updateReprView();
+                    updateHoverInfo();
+                }
+            } else if (hoveredState !== -1) {
+                hoveredState = -1;
+                drawMaze();
+                updateReprView();
+                updateHoverInfo();
+            }
+        });
+
+        mazeCanvas.addEventListener('mouseleave', () => {
+            if (hoveredState !== -1) {
+                hoveredState = -1;
+                drawMaze();
+                updateReprView();
+                updateHoverInfo();
+            }
+        });
+
+        // ============================================
+        // VISUALIZATION - THREE.JS REPRESENTATIONS
+        // ============================================
+        const reprPanel = document.getElementById('repr-panel');
+        let viewMode = 'pca3d'; // 'pca3d', 'pca2d', 'magnitude'
+
+        // Three.js setup
+        const scene = new THREE.Scene();
+        scene.background = new THREE.Color(0x12121a);
+
+        // Cameras
+        const aspect = reprPanel.clientWidth / reprPanel.clientHeight;
+        const frustumSize = 2.5;
+        const orthoCamera = new THREE.OrthographicCamera(
+            -frustumSize * aspect, frustumSize * aspect,
+            frustumSize, -frustumSize, 0.1, 100
+        );
+        orthoCamera.position.set(0, 0, 5);
+
+        const perspCamera = new THREE.PerspectiveCamera(60, aspect, 0.1, 100);
+        perspCamera.position.set(2, 1.5, 2);
+
+        let activeCamera = orthoCamera;
+
+        const renderer = new THREE.WebGLRenderer({ antialias: true });
+        renderer.setSize(reprPanel.clientWidth, reprPanel.clientHeight);
+        reprPanel.appendChild(renderer.domElement);
+
+        const controls = new THREE.OrbitControls(perspCamera, renderer.domElement);
+        controls.enableDamping = true;
+        controls.enabled = false; // Disabled for 2D views
+
+        // Create unit circle/sphere wireframe
+        const circleGeom = new THREE.BufferGeometry();
+        const circlePoints = [];
+        for (let angle = 0; angle <= Math.PI * 2; angle += 0.05) {
+            circlePoints.push(Math.sin(angle), Math.cos(angle), 0);
+        }
+        circleGeom.setAttribute('position', new THREE.Float32BufferAttribute(circlePoints, 3));
+        const circleMat = new THREE.LineBasicMaterial({ color: 0x666688, transparent: true, opacity: 0.6 });
+        const circleLine = new THREE.Line(circleGeom, circleMat);
+        scene.add(circleLine);
+
+        // Semicircle for magnitude view
+        const semiGeom = new THREE.BufferGeometry();
+        const semiPoints = [];
+        for (let angle = 0; angle <= Math.PI; angle += 0.05) {
+            semiPoints.push(Math.sin(angle), Math.cos(angle), 0);
+        }
+        semiGeom.setAttribute('position', new THREE.Float32BufferAttribute(semiPoints, 3));
+        const semiLine = new THREE.Line(semiGeom, circleMat.clone());
+        scene.add(semiLine);
+
+        // Sphere wireframe for 3D
+        const sphereWire = new THREE.Mesh(
+            new THREE.SphereGeometry(1, 24, 24),
+            new THREE.MeshBasicMaterial({ color: 0x333355, wireframe: true, transparent: true, opacity: 0.15 })
+        );
+        scene.add(sphereWire);
+
+        // Axes
+        const axesMat = new THREE.LineBasicMaterial({ color: 0x444466 });
+        // Y axis (c)
+        const yAxisGeom = new THREE.BufferGeometry().setFromPoints([
+            new THREE.Vector3(0, -1.2, 0), new THREE.Vector3(0, 1.2, 0)
+        ]);
+        const yAxis = new THREE.Line(yAxisGeom, axesMat);
+        scene.add(yAxis);
+        // X axis
+        const xAxisGeom = new THREE.BufferGeometry().setFromPoints([
+            new THREE.Vector3(-1.2, 0, 0), new THREE.Vector3(1.2, 0, 0)
+        ]);
+        const xAxis = new THREE.Line(xAxisGeom, axesMat);
+        scene.add(xAxis);
+        // Z axis (for 3D)
+        const zAxisGeom = new THREE.BufferGeometry().setFromPoints([
+            new THREE.Vector3(0, 0, -1.2), new THREE.Vector3(0, 0, 1.2)
+        ]);
+        const zAxis = new THREE.Line(zAxisGeom, axesMat);
+        scene.add(zAxis);
+
+
+        // Create text sprite helper
+        function createTextSprite(text, fontSize = 48, width = 512) {
+            const canvas = document.createElement('canvas');
+            const ctx = canvas.getContext('2d');
+            canvas.width = width;
+            canvas.height = 64;
+
+            ctx.font = `${fontSize}px "Segoe UI", system-ui, sans-serif`;
+            ctx.fillStyle = 'rgba(150, 160, 180, 0.9)';
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.fillText(text, width / 2, 32);
+
+            const texture = new THREE.CanvasTexture(canvas);
+            texture.minFilter = THREE.LinearFilter;
+
+            const material = new THREE.SpriteMaterial({
+                map: texture,
+                transparent: true,
+                depthTest: false
+            });
+
+            const sprite = new THREE.Sprite(material);
+            sprite.scale.set(width / 512, 0.125, 1);
+            return sprite;
+        }
+
+        // Axis labels
+        const labelC = createTextSprite('c');
+        labelC.position.set(0.7, 1.15, 0);
+        scene.add(labelC);
+
+        const labelZeta = createTextSprite('||ζ||');
+        labelZeta.position.set(1.15, 0, 0);
+        scene.add(labelZeta);
+
+        const labelPC1 = createTextSprite('ζ · PC₁');
+        labelPC1.position.set(1.15, 0, 0);
+        scene.add(labelPC1);
+
+        const labelPC2 = createTextSprite('ζ · PC₂');
+        labelPC2.position.set(0, 0, 1.15);
+        scene.add(labelPC2);
+
+        const labelGoal = createTextSprite('goal', 36);
+        labelGoal.position.set(0.2, 1.05, 0);
+        scene.add(labelGoal);
+
+        const labelAntiGoal = createTextSprite('-goal', 36);
+        labelAntiGoal.position.set(0.22, -1.05, 0);
+        scene.add(labelAntiGoal);
+
+        // State meshes
+        const stateMeshes = [];
+        function initStateMeshes() {
+            stateMeshes.forEach(m => scene.remove(m));
+            stateMeshes.length = 0;
+            for (let s = 0; s < NUM_STATES; s++) {
+                const mesh = new THREE.Mesh(
+                    new THREE.SphereGeometry(0.04, 8, 8),
+                    new THREE.MeshBasicMaterial({ color: 0x4488ff })
+                );
+                scene.add(mesh);
+                stateMeshes.push(mesh);
+            }
+        }
+
+        // Hover highlight - camera-facing rings only
+        const hoverRingInner = new THREE.Mesh(
+            new THREE.RingGeometry(0.042, 0.048, 32),
+            new THREE.MeshBasicMaterial({
+                color: 0xffdd66,
+                transparent: true,
+                opacity: 0.0,
+                side: THREE.DoubleSide,
+                depthTest: false
+            })
+        );
+        hoverRingInner.renderOrder = 1001;
+        scene.add(hoverRingInner);
+
+        const hoverRingOuter = new THREE.Mesh(
+            new THREE.RingGeometry(0.046, 0.058, 32),
+            new THREE.MeshBasicMaterial({
+                color: 0xffaa22,
+                transparent: true,
+                opacity: 0.0,
+                side: THREE.DoubleSide,
+                depthTest: false
+            })
+        );
+        hoverRingOuter.renderOrder = 1000;
+        scene.add(hoverRingOuter);
+
+        // Trajectory path cylinders
+        const MAX_TRAJ_SEGMENTS = 60;
+        const trajCylinders = [];
+        const trajCylinderGeom = new THREE.CylinderGeometry(0.008, 0.008, 1, 8);
+        const trajCylinderMatSuccess = new THREE.MeshBasicMaterial({
+            color: 0x6ab07a, transparent: true, opacity: 0.7
+        });
+        const trajCylinderMatFail = new THREE.MeshBasicMaterial({
+            color: 0xbba866, transparent: true, opacity: 0.7
+        });
+
+        for (let i = 0; i < MAX_TRAJ_SEGMENTS; i++) {
+            const cyl = new THREE.Mesh(trajCylinderGeom, trajCylinderMatSuccess.clone());
+            cyl.visible = false;
+            scene.add(cyl);
+            trajCylinders.push(cyl);
+        }
+
+        // Helper to position cylinder between two points
+        function positionCylinder(cylinder, p1, p2) {
+            const mid = new THREE.Vector3().addVectors(p1, p2).multiplyScalar(0.5);
+            cylinder.position.copy(mid);
+
+            const dir = new THREE.Vector3().subVectors(p2, p1);
+            const length = dir.length();
+            cylinder.scale.set(1, length, 1);
+
+            // Align cylinder to direction
+            const up = new THREE.Vector3(0, 1, 0);
+            const quat = new THREE.Quaternion().setFromUnitVectors(up, dir.normalize());
+            cylinder.quaternion.copy(quat);
+        }
+
+        // PCA computation - keep track of previous PCs to maintain consistent sign
+        let prevPC1 = null;
+        let prevPC2 = null;
+
+        function computeZetaPCA() {
+            const zetas = [];
+            const stateIndices = [];
+
+            for (let s = 0; s < NUM_STATES; s++) {
+                const [i, j] = stateToPos(s);
+                if (walls[i][j] === 1) continue;
+
+                const c = goalSimilarity(s);
+                const zeta = [];
+                for (let d = 0; d < REP_DIM; d++) {
+                    zeta.push(psi[s][d] - c * psiGoal[d]);
+                }
+                zetas.push(zeta);
+                stateIndices.push(s);
+            }
+
+            if (zetas.length === 0) return { projections1: {}, projections2: {} };
+
+            // Compute mean
+            const mean = new Array(REP_DIM).fill(0);
+            for (const z of zetas) {
+                for (let d = 0; d < REP_DIM; d++) mean[d] += z[d];
+            }
+            for (let d = 0; d < REP_DIM; d++) mean[d] /= zetas.length;
+
+            // Center the data
+            const centered = zetas.map(z => z.map((v, d) => v - mean[d]));
+
+            // Power iteration for PC1 - initialize from previous if available
+            let pc1 = prevPC1 ? prevPC1.slice() : new Array(REP_DIM).fill(0).map(() => Math.random() - 0.5);
+            normalize(pc1);
+            for (let iter = 0; iter < 50; iter++) {
+                const newPc = new Array(REP_DIM).fill(0);
+                for (const z of centered) {
+                    const proj = dot(z, pc1);
+                    for (let d = 0; d < REP_DIM; d++) newPc[d] += proj * z[d];
+                }
+                normalize(newPc);
+                pc1 = newPc;
+            }
+
+            // Ensure consistent sign with previous PC1
+            if (prevPC1 && dot(pc1, prevPC1) < 0) {
+                for (let d = 0; d < REP_DIM; d++) pc1[d] = -pc1[d];
+            }
+            prevPC1 = pc1.slice();
+
+            // Power iteration for PC2 (orthogonal to PC1)
+            let pc2 = prevPC2 ? prevPC2.slice() : new Array(REP_DIM).fill(0).map(() => Math.random() - 0.5);
+            // Remove PC1 component
+            let proj1 = dot(pc2, pc1);
+            for (let d = 0; d < REP_DIM; d++) pc2[d] -= proj1 * pc1[d];
+            normalize(pc2);
+            for (let iter = 0; iter < 50; iter++) {
+                const newPc = new Array(REP_DIM).fill(0);
+                for (const z of centered) {
+                    const proj = dot(z, pc2);
+                    for (let d = 0; d < REP_DIM; d++) newPc[d] += proj * z[d];
+                }
+                // Remove PC1 component
+                proj1 = dot(newPc, pc1);
+                for (let d = 0; d < REP_DIM; d++) newPc[d] -= proj1 * pc1[d];
+                normalize(newPc);
+                pc2 = newPc;
+            }
+
+            // Ensure consistent sign with previous PC2
+            if (prevPC2 && dot(pc2, prevPC2) < 0) {
+                for (let d = 0; d < REP_DIM; d++) pc2[d] = -pc2[d];
+            }
+            prevPC2 = pc2.slice();
+
+            // Project all states using raw zeta (not centered)
+            // This keeps goal (ζ=0) at origin
+            const projections1 = {}, projections2 = {};
+            for (let i = 0; i < zetas.length; i++) {
+                projections1[stateIndices[i]] = dot(zetas[i], pc1);
+                projections2[stateIndices[i]] = dot(zetas[i], pc2);
+            }
+
+            return { projections1, projections2 };
+        }
+
+        function updateReprView() {
+            if (!psi || !psiGoal) return;
+
+            // Update visibility based on view mode
+            const is3D = viewMode === 'pca3d';
+            circleLine.visible = viewMode === 'pca2d';
+            semiLine.visible = viewMode === 'magnitude';
+            sphereWire.visible = is3D;
+            zAxis.visible = is3D;
+
+            // Update axis label visibility
+            labelZeta.visible = viewMode === 'magnitude';
+            labelPC1.visible = viewMode !== 'magnitude';
+            labelPC2.visible = is3D;
+            labelAntiGoal.visible = viewMode !== 'magnitude'; // Only show for full circle views
+
+            // Update camera and controls
+            if (is3D) {
+                activeCamera = perspCamera;
+                controls.enabled = true;
+            } else {
+                activeCamera = orthoCamera;
+                controls.enabled = false;
+                orthoCamera.position.set(0, 0, 5);
+                orthoCamera.lookAt(0, 0, 0);
+            }
+
+            // Compute PCA if needed
+            let pcaData = null;
+            if (viewMode !== 'magnitude') {
+                pcaData = computeZetaPCA();
+            }
+
+            // Update state positions
+            for (let s = 0; s < NUM_STATES; s++) {
+                const [i, j] = stateToPos(s);
+                if (walls[i][j] === 1) {
+                    stateMeshes[s].visible = false;
+                    continue;
+                }
+                stateMeshes[s].visible = true;
+
+                const c = goalSimilarity(s);
+                let x = 0, y = c, z = 0;
+
+                if (viewMode === 'magnitude') {
+                    x = Math.sqrt(Math.max(0, 1 - c * c));
+                    z = 0;
+                } else {
+                    x = pcaData.projections1[s] || 0;
+                    z = is3D ? (pcaData.projections2[s] || 0) : 0;
+                }
+
+                stateMeshes[s].position.set(x, y, z);
+
+                // Color and size - muted palette
+                const t = (c + 1) / 2;
+                let color, scale;
+
+                if (s === GOAL_STATE) {
+                    color = 0x6699bb; // Muted blue - matches grid goal
+                    scale = 1.25;
+                } else if (s === START_STATE) {
+                    color = 0x5a9a7a; // Muted teal
+                    scale = 1.25;
+                } else {
+                    // Muted gradient: coral to slate blue
+                    const r = Math.floor(90 + 90 * (1 - t));
+                    const g = Math.floor(120 - 20 * (1 - t));
+                    const b = Math.floor(160 - 70 * (1 - t));
+                    color = (r << 16) | (g << 8) | b;
+                    scale = 1;
+                }
+
+                stateMeshes[s].material.color.setHex(color);
+                stateMeshes[s].scale.setScalar(scale);
+
+                // Pop hovered state to foreground with ring highlight
+                if (s === hoveredState) {
+                    stateMeshes[s].renderOrder = 1002;
+                    stateMeshes[s].material.depthTest = false;
+
+                    // Position rings at sphere and face camera
+                    hoverRingInner.position.copy(stateMeshes[s].position);
+                    hoverRingInner.material.opacity = 0.9;
+                    hoverRingInner.scale.setScalar(scale);
+                    hoverRingInner.lookAt(activeCamera.position);
+
+                    hoverRingOuter.position.copy(stateMeshes[s].position);
+                    hoverRingOuter.material.opacity = 0.4;
+                    hoverRingOuter.scale.setScalar(scale);
+                    hoverRingOuter.lookAt(activeCamera.position);
+                } else {
+                    stateMeshes[s].renderOrder = 0;
+                    stateMeshes[s].material.depthTest = true;
+                }
+            }
+
+            // Hide rings if nothing hovered
+            if (hoveredState === -1) {
+                hoverRingInner.material.opacity = 0.0;
+                hoverRingOuter.material.opacity = 0.0;
+            }
+
+            // Update trajectory cylinders
+            const trajColor = currentTrajSuccess ? 0x6ab07a : 0xbba866;
+            for (let i = 0; i < MAX_TRAJ_SEGMENTS; i++) {
+                if (i < currentTraj.length - 1) {
+                    const s1 = currentTraj[i];
+                    const s2 = currentTraj[i + 1];
+                    const p1 = stateMeshes[s1].position;
+                    const p2 = stateMeshes[s2].position;
+
+                    positionCylinder(trajCylinders[i], p1, p2);
+                    trajCylinders[i].material.color.setHex(trajColor);
+                    trajCylinders[i].visible = true;
+                } else {
+                    trajCylinders[i].visible = false;
+                }
+            }
+
+            // Update title
+            const titles = {
+                'magnitude': 'Representation Space: c vs ||ζ|| (squeeze)',
+                'pca2d': 'Representation Space: c vs ζ·PC1 (clustering)',
+                'pca3d': 'Representation Space: 3D PCA (c, PC1, PC2)'
+            };
+            document.getElementById('repr-title').textContent = titles[viewMode];
+        }
+
+        function renderRepr() {
+            if (viewMode === 'pca3d') {
+                controls.update();
+            }
+            renderer.render(scene, activeCamera);
+        }
+
+        function resizeReprView() {
+            const w = reprPanel.clientWidth;
+            const h = reprPanel.clientHeight;
+            const aspect = w / h;
+
+            orthoCamera.left = -frustumSize * aspect;
+            orthoCamera.right = frustumSize * aspect;
+            orthoCamera.updateProjectionMatrix();
+
+            perspCamera.aspect = aspect;
+            perspCamera.updateProjectionMatrix();
+
+            renderer.setSize(w, h);
+        }
+
+        // Raycasting for Three.js hover
+        const raycaster = new THREE.Raycaster();
+        const mouse = new THREE.Vector2();
+
+        renderer.domElement.addEventListener('mousemove', (e) => {
+            const rect = renderer.domElement.getBoundingClientRect();
+            mouse.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
+            mouse.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
+
+            raycaster.setFromCamera(mouse, activeCamera);
+            const intersects = raycaster.intersectObjects(stateMeshes);
+
+            let newHovered = -1;
+            if (intersects.length > 0) {
+                const mesh = intersects[0].object;
+                const idx = stateMeshes.indexOf(mesh);
+                if (idx !== -1) {
+                    newHovered = idx;
+                }
+            }
+
+            if (newHovered !== hoveredState) {
+                hoveredState = newHovered;
+                drawMaze();
+                updateReprView();
+                updateHoverInfo();
+            }
+        });
+
+        renderer.domElement.addEventListener('mouseleave', () => {
+            if (hoveredState !== -1) {
+                hoveredState = -1;
+                drawMaze();
+                updateReprView();
+                updateHoverInfo();
+            }
+        });
+
+        // ============================================
+        // SIMULATION LOOP
+        // ============================================
+        let episode = 0;
+        let totalSteps = 0;
+        let successCount = 0;
+        let lastLoss = 0;
+        let isPlaying = false;
+        let speed = 10;
+
+        function runEpisode(withGradient = true) {
+            const result = collectEpisode();
+            currentTraj = result.traj;
+            currentTrajSuccess = result.success;
+            totalSteps += result.traj.length;
+            if (result.success) successCount++;
+
+            // Update representations only if requested
+            if (withGradient) {
+                lastLoss = updateRepresentations();
+            }
+
+            episode++;
+            updateStats();
+        }
+
+        function updateStats() {
+            document.getElementById('stat-episode').textContent = episode;
+            document.getElementById('stat-steps').textContent = totalSteps;
+            document.getElementById('stat-success').textContent = successCount;
+            document.getElementById('stat-success-rate').textContent = episode > 0 ? Math.round(100 * successCount / episode) + '%' : '0%';
+            document.getElementById('stat-loss').textContent = lastLoss.toFixed(3);
+
+            // Goal state similarity to psiGoal
+            const goalSim = dot(psi[GOAL_STATE], psiGoal);
+            document.getElementById('stat-goal-sim').textContent = goalSim.toFixed(3);
+
+            // Compute averages
+            let sumSim = 0;
+            for (let s = 0; s < NUM_STATES; s++) {
+                const [i, j] = stateToPos(s);
+                if (walls[i][j] === 1) continue;
+                sumSim += goalSimilarity(s);
+            }
+            const validStates = NUM_STATES - walls.flat().filter(w => w === 1).length;
+            document.getElementById('stat-avg-sim').textContent = (sumSim / validStates).toFixed(3);
+            document.getElementById('stat-goal-batch').textContent = goalInBatchCount;
+
+            // Count trajectories containing goal state
+            const trajsWithGoal = replay.filter(traj => traj.includes(GOAL_STATE)).length;
+            document.getElementById('stat-goal-trajs').textContent = trajsWithGoal;
+        }
+
+        function reset() {
+            episode = 0;
+            totalSteps = 0;
+            successCount = 0;
+            lastLoss = 0;
+            currentTraj = [];
+            currentTrajSuccess = false;
+            isPlaying = false;
+            goalInBatchCount = 0;
+            document.getElementById('btn-play').textContent = '▶ Play';
+
+            REP_DIM = parseInt(document.getElementById('dim-slider').value);
+            document.getElementById('dim-value').textContent = REP_DIM;
+
+            // Recreate representation and agent with new REP_DIM
+            representation = new TabularRepresentation(env.numStates, REP_DIM, env.goalState);
+            agent = new SGCRLAgent(env, representation, {
+                replayCapacity: 200,
+                batchSize: 64,
+                gamma: 0.99,
+                lr: 0.02,
+                entropyCoeff: 0.1,
+                maxSteps: 50
+            });
+
+            initAgent();
+            initStateMeshes();
+            prevPC1 = null;  // Reset PCA directions
+            prevPC2 = null;
+            updateStats();
+            drawMaze();
+            updateReprView();
+        }
+
+        // Controls
+        document.getElementById('btn-play').addEventListener('click', () => {
+            isPlaying = !isPlaying;
+            document.getElementById('btn-play').textContent = isPlaying ? '⏸ Pause' : '▶ Play';
+        });
+
+        document.getElementById('btn-step').addEventListener('click', () => {
+            if (!isPlaying) {
+                lastLoss = updateRepresentations();
+                updateStats();
+                drawMaze();
+                updateReprView();
+            }
+        });
+
+        document.getElementById('btn-episode').addEventListener('click', () => {
+            if (!isPlaying) {
+                runEpisode(false);  // Collect only, no gradient
+                drawMaze();
+                updateReprView();
+            }
+        });
+
+        document.getElementById('btn-reset').addEventListener('click', reset);
+
+        document.getElementById('speed-slider').addEventListener('input', (e) => {
+            speed = parseInt(e.target.value);
+        });
+
+        document.getElementById('dim-slider').addEventListener('input', (e) => {
+            document.getElementById('dim-value').textContent = e.target.value;
+        });
+
+        document.getElementById('btn-view-magnitude').addEventListener('click', () => {
+            viewMode = 'magnitude';
+            document.getElementById('btn-view-magnitude').classList.add('active');
+            document.getElementById('btn-view-pca2d').classList.remove('active');
+            document.getElementById('btn-view-pca3d').classList.remove('active');
+            updateReprView();
+        });
+
+        document.getElementById('btn-view-pca2d').addEventListener('click', () => {
+            viewMode = 'pca2d';
+            document.getElementById('btn-view-pca2d').classList.add('active');
+            document.getElementById('btn-view-magnitude').classList.remove('active');
+            document.getElementById('btn-view-pca3d').classList.remove('active');
+            updateReprView();
+        });
+
+        document.getElementById('btn-view-pca3d').addEventListener('click', () => {
+            viewMode = 'pca3d';
+            document.getElementById('btn-view-pca3d').classList.add('active');
+            document.getElementById('btn-view-magnitude').classList.remove('active');
+            document.getElementById('btn-view-pca2d').classList.remove('active');
+            updateReprView();
+        });
+
+        // Animation loop
+        let lastUpdate = 0;
+        function animate(time) {
+            requestAnimationFrame(animate);
+
+            if (isPlaying && time - lastUpdate > (1000 / speed)) {
+                runEpisode();
+                drawMaze();
+                updateReprView();
+                lastUpdate = time;
+            }
+
+            renderRepr();
+        }
+
+        // Resize handling
+        window.addEventListener('resize', () => {
+            resizeMazeCanvas();
+            resizeReprView();
+            drawMaze();
+            updateReprView();
+        });
+
+        // Initialize
+        resizeMazeCanvas();
+        initStateMeshes();
+        reset();
+        animate(0);
+    </script>
+</body>
+</html>
