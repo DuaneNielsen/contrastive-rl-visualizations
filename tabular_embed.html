@@ -15,6 +15,7 @@
         #container {
             display: grid;
             grid-template-columns: 1fr 1fr;
+            grid-template-rows: 1fr 36px;
             height: 100vh;
             gap: 1px;
             background: #2a2a3a;
@@ -36,57 +37,45 @@
         }
         #maze-canvas { width: 100%; height: 100%; }
 
-        /* Floating controls */
-        #controls-toggle {
-            position: fixed;
-            bottom: 12px;
-            left: 12px;
+        /* Bottom taskbar */
+        #taskbar {
+            grid-column: 1 / -1;
+            background: #1a1a24;
+            display: flex;
+            align-items: center;
+            padding: 0 12px;
+            gap: 12px;
+            border-top: 1px solid #333;
+        }
+        #taskbar button {
             background: #3355aa;
             color: white;
             border: none;
-            padding: 8px 14px;
-            border-radius: 20px;
-            cursor: pointer;
-            font-size: 0.8em;
-            z-index: 100;
-            box-shadow: 0 2px 8px rgba(0,0,0,0.4);
-        }
-        #controls-toggle:hover { background: #4466cc; }
-
-        #controls-panel {
-            position: fixed;
-            bottom: 50px;
-            left: 12px;
-            background: rgba(18, 18, 26, 0.95);
-            padding: 12px;
-            border-radius: 8px;
-            z-index: 99;
-            display: none;
-            box-shadow: 0 4px 20px rgba(0,0,0,0.5);
-            border: 1px solid #333;
-            max-width: 200px;
-        }
-        #controls-panel.visible { display: block; }
-
-        #controls-panel button {
-            background: #3355aa;
-            color: white;
-            border: none;
-            padding: 6px 10px;
-            margin: 2px;
+            padding: 5px 12px;
             border-radius: 4px;
             cursor: pointer;
             font-size: 0.75em;
         }
-        #controls-panel button:hover { background: #4466cc; }
-        #controls-panel button.active { background: #44aa66; }
+        #taskbar button:hover { background: #4466cc; }
+        #taskbar button.active { background: #44aa66; }
 
-        .mini-stats {
-            font-size: 0.7em;
-            margin-top: 8px;
-            color: #888;
+        .taskbar-section {
+            display: flex;
+            align-items: center;
+            gap: 4px;
         }
-        .mini-stats span { color: #8abb9a; }
+        .taskbar-divider {
+            width: 1px;
+            height: 20px;
+            background: #444;
+            margin: 0 4px;
+        }
+        .taskbar-stats {
+            font-size: 0.7em;
+            color: #888;
+            margin-left: auto;
+        }
+        .taskbar-stats span { color: #8abb9a; }
 
         /* Colorbar */
         .colorbar {
@@ -107,10 +96,6 @@
         }
         .colorbar-label.top { top: 50%; transform: translateY(-80px); }
         .colorbar-label.bottom { top: 50%; transform: translateY(70px); }
-
-        /* View buttons */
-        .view-btns { margin-top: 6px; }
-        .view-btns button { padding: 4px 8px; font-size: 0.7em; }
     </style>
 </head>
 <body>
@@ -125,23 +110,21 @@
         <div class="panel" id="repr-panel">
             <div class="panel-title" id="repr-title">Representations</div>
         </div>
-    </div>
-
-    <button id="controls-toggle">▶ Play</button>
-
-    <div id="controls-panel" class="visible">
-        <div>
-            <button id="btn-play">▶ Play</button>
-            <button id="btn-reset">Reset</button>
-        </div>
-        <div class="view-btns">
-            <button id="btn-view-pca3d" class="active">3D</button>
-            <button id="btn-view-pca2d">2D</button>
-            <button id="btn-view-magnitude">||ζ||</button>
-        </div>
-        <div class="mini-stats">
-            Ep: <span id="stat-episode">0</span> |
-            Success: <span id="stat-success-rate">0%</span>
+        <div id="taskbar">
+            <div class="taskbar-section">
+                <button id="btn-play">▶ Play</button>
+                <button id="btn-reset">Reset</button>
+            </div>
+            <div class="taskbar-divider"></div>
+            <div class="taskbar-section">
+                <button id="btn-view-pca3d" class="active">3D</button>
+                <button id="btn-view-pca2d">2D</button>
+                <button id="btn-view-magnitude">||ζ||</button>
+            </div>
+            <div class="taskbar-stats">
+                Ep: <span id="stat-episode">0</span> |
+                Success: <span id="stat-success-rate">0%</span>
+            </div>
         </div>
     </div>
 
@@ -542,6 +525,39 @@
         const zAxis = new THREE.Line(zAxisGeom, axesMat);
         scene.add(zAxis);
 
+        // Axis labels as sprites
+        function createTextSprite(text, color = '#888899') {
+            const canvas = document.createElement('canvas');
+            canvas.width = 128;
+            canvas.height = 64;
+            const ctx = canvas.getContext('2d');
+            ctx.font = 'bold 32px Arial';
+            ctx.fillStyle = color;
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.fillText(text, 64, 32);
+            const texture = new THREE.CanvasTexture(canvas);
+            const material = new THREE.SpriteMaterial({ map: texture, transparent: true });
+            const sprite = new THREE.Sprite(material);
+            sprite.scale.set(0.4, 0.2, 1);
+            return sprite;
+        }
+
+        // Y-axis label: c (cosine similarity)
+        const yLabel = createTextSprite('c');
+        yLabel.position.set(0.15, 1.35, 0);
+        scene.add(yLabel);
+
+        // X-axis label: ζ·PC₁ (for PCA modes) or ||ζ|| (for magnitude mode)
+        const xLabel = createTextSprite('ζ·PC₁');
+        xLabel.position.set(1.35, 0, 0);
+        scene.add(xLabel);
+
+        // Z-axis label: ζ·PC₂ (only for 3D mode)
+        const zLabel = createTextSprite('ζ·PC₂');
+        zLabel.position.set(0, 0, 1.35);
+        scene.add(zLabel);
+
         // State meshes
         const stateMeshes = [];
         for (let s = 0; s < NUM_STATES; s++) {
@@ -619,8 +635,42 @@
             if (!representation.psi) return;
 
             const is3D = viewMode === 'pca3d';
+            const isMagnitude = viewMode === 'magnitude';
             circleLine.visible = viewMode === 'pca2d';
             sphereWire.visible = is3D;
+            zAxis.visible = is3D;
+            zLabel.visible = is3D;
+
+            // Update x-axis label based on view mode
+            if (isMagnitude) {
+                xLabel.material.map.dispose();
+                xLabel.material.dispose();
+                const canvas = document.createElement('canvas');
+                canvas.width = 128;
+                canvas.height = 64;
+                const ctx = canvas.getContext('2d');
+                ctx.font = 'bold 32px Arial';
+                ctx.fillStyle = '#888899';
+                ctx.textAlign = 'center';
+                ctx.textBaseline = 'middle';
+                ctx.fillText('||ζ||', 64, 32);
+                const texture = new THREE.CanvasTexture(canvas);
+                xLabel.material = new THREE.SpriteMaterial({ map: texture, transparent: true });
+            } else {
+                xLabel.material.map.dispose();
+                xLabel.material.dispose();
+                const canvas = document.createElement('canvas');
+                canvas.width = 128;
+                canvas.height = 64;
+                const ctx = canvas.getContext('2d');
+                ctx.font = 'bold 32px Arial';
+                ctx.fillStyle = '#888899';
+                ctx.textAlign = 'center';
+                ctx.textBaseline = 'middle';
+                ctx.fillText('ζ·PC₁', 64, 32);
+                const texture = new THREE.CanvasTexture(canvas);
+                xLabel.material = new THREE.SpriteMaterial({ map: texture, transparent: true });
+            }
 
             if (is3D) {
                 activeCamera = perspCamera;
@@ -707,27 +757,12 @@
             drawMaze();
             updateReprView();
             document.getElementById('btn-play').textContent = '▶ Play';
-            document.getElementById('controls-toggle').textContent = '▶ Play';
         }
 
         // Controls
-        const controlsPanel = document.getElementById('controls-panel');
-        document.getElementById('controls-toggle').addEventListener('click', () => {
-            if (!controlsPanel.classList.contains('visible')) {
-                controlsPanel.classList.add('visible');
-            } else {
-                isPlaying = !isPlaying;
-                const txt = isPlaying ? '⏸ Pause' : '▶ Play';
-                document.getElementById('btn-play').textContent = txt;
-                document.getElementById('controls-toggle').textContent = txt;
-            }
-        });
-
         document.getElementById('btn-play').addEventListener('click', () => {
             isPlaying = !isPlaying;
-            const txt = isPlaying ? '⏸ Pause' : '▶ Play';
-            document.getElementById('btn-play').textContent = txt;
-            document.getElementById('controls-toggle').textContent = txt;
+            document.getElementById('btn-play').textContent = isPlaying ? '⏸ Pause' : '▶ Play';
         });
 
         document.getElementById('btn-reset').addEventListener('click', reset);
