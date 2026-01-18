@@ -135,7 +135,7 @@
 
     <button id="controls-toggle">▶ Play</button>
 
-    <div id="controls-panel">
+    <div id="controls-panel" class="visible">
         <div>
             <button id="btn-play">▶ Play</button>
             <button id="btn-reset">Reset</button>
@@ -550,6 +550,22 @@
             new THREE.MeshBasicMaterial({ color: 0x333355, wireframe: true, transparent: true, opacity: 0.15 })
         );
         scene.add(sphereWire);
+
+        // Axes
+        const axesMat = new THREE.LineBasicMaterial({ color: 0x444466 });
+        const yAxisGeom = new THREE.BufferGeometry().setFromPoints([
+            new THREE.Vector3(0, -1.2, 0), new THREE.Vector3(0, 1.2, 0)
+        ]);
+        scene.add(new THREE.Line(yAxisGeom, axesMat));
+        const xAxisGeom = new THREE.BufferGeometry().setFromPoints([
+            new THREE.Vector3(-1.2, 0, 0), new THREE.Vector3(1.2, 0, 0)
+        ]);
+        scene.add(new THREE.Line(xAxisGeom, axesMat));
+        const zAxisGeom = new THREE.BufferGeometry().setFromPoints([
+            new THREE.Vector3(0, 0, -1.2), new THREE.Vector3(0, 0, 1.2)
+        ]);
+        const zAxis = new THREE.Line(zAxisGeom, axesMat);
+        scene.add(zAxis);
 
         const stateMeshes = [];
         for (let s = 0; s < NUM_STATES; s++) {
