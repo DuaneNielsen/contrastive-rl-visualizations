@@ -405,6 +405,7 @@
         const mazeCtx = mazeCanvas.getContext('2d');
         let currentTraj = [];
         let currentTrajSuccess = false;
+        let hoveredState = -1;
 
         function resizeMazeCanvas() {
             const panel = document.getElementById('maze-panel');
@@ -423,6 +424,8 @@
                     const x = j * cellW;
                     const y = (HEIGHT - 1 - i) * cellH;
                     const s = env.posToState(i, j);
+                    const isHovered = s === hoveredState;
+
                     if (walls[i][j] === 1) {
                         mazeCtx.fillStyle = '#2a2a35';
                     } else if (s === START_STATE) {
@@ -436,6 +439,13 @@
                         mazeCtx.fillStyle = `rgb(${r}, ${g}, ${b})`;
                     }
                     mazeCtx.fillRect(x + 1, y + 1, cellW - 2, cellH - 2);
+
+                    // Hover highlight
+                    if (isHovered) {
+                        mazeCtx.strokeStyle = '#ffcc44';
+                        mazeCtx.lineWidth = 2;
+                        mazeCtx.strokeRect(x + 2, y + 2, cellW - 4, cellH - 4);
+                    }
                 }
             }
 
@@ -596,6 +606,25 @@
             cylinder.quaternion.copy(quat);
         }
 
+        // Hover highlight rings
+        const hoverRingInner = new THREE.Mesh(
+            new THREE.RingGeometry(0.042, 0.048, 32),
+            new THREE.MeshBasicMaterial({ color: 0xffcc44, transparent: true, opacity: 0, side: THREE.DoubleSide, depthTest: false })
+        );
+        hoverRingInner.renderOrder = 1001;
+        scene.add(hoverRingInner);
+
+        const hoverRingOuter = new THREE.Mesh(
+            new THREE.RingGeometry(0.046, 0.058, 32),
+            new THREE.MeshBasicMaterial({ color: 0xffaa22, transparent: true, opacity: 0, side: THREE.DoubleSide, depthTest: false })
+        );
+        hoverRingOuter.renderOrder = 1000;
+        scene.add(hoverRingOuter);
+
+        // Raycaster for hover detection
+        const raycaster = new THREE.Raycaster();
+        const mouse = new THREE.Vector2();
+
         let prevPC1 = null, prevPC2 = null;
 
         function computeZetaPCA() {
@@ -755,6 +784,20 @@
                     trajCylinders[i].visible = false;
                 }
             }
+
+            // Update hover rings
+            if (hoveredState !== -1 && stateMeshes[hoveredState].visible) {
+                hoverRingInner.position.copy(stateMeshes[hoveredState].position);
+                hoverRingInner.material.opacity = 0.9;
+                hoverRingInner.lookAt(activeCamera.position);
+
+                hoverRingOuter.position.copy(stateMeshes[hoveredState].position);
+                hoverRingOuter.material.opacity = 0.4;
+                hoverRingOuter.lookAt(activeCamera.position);
+            } else {
+                hoverRingInner.material.opacity = 0;
+                hoverRingOuter.material.opacity = 0;
+            }
         }
 
         function resizeReprView() {
@@ -827,6 +870,68 @@
             document.querySelectorAll('.view-btns button').forEach(b => b.classList.remove('active'));
             document.getElementById('btn-view-magnitude').classList.add('active');
             updateReprView();
+        });
+
+        // Maze hover handling
+        mazeCanvas.addEventListener('mousemove', (e) => {
+            const rect = mazeCanvas.getBoundingClientRect();
+            const mx = e.clientX - rect.left;
+            const my = e.clientY - rect.top;
+            const cellW = mazeCanvas.width / WIDTH;
+            const cellH = mazeCanvas.height / HEIGHT;
+            const j = Math.floor(mx / cellW);
+            const i = HEIGHT - 1 - Math.floor(my / cellH);
+
+            if (i >= 0 && i < HEIGHT && j >= 0 && j < WIDTH && walls[i][j] === 0) {
+                const newHovered = env.posToState(i, j);
+                if (newHovered !== hoveredState) {
+                    hoveredState = newHovered;
+                    drawMaze();
+                    updateReprView();
+                }
+            } else if (hoveredState !== -1) {
+                hoveredState = -1;
+                drawMaze();
+                updateReprView();
+            }
+        });
+
+        mazeCanvas.addEventListener('mouseleave', () => {
+            if (hoveredState !== -1) {
+                hoveredState = -1;
+                drawMaze();
+                updateReprView();
+            }
+        });
+
+        // Three.js hover handling
+        renderer.domElement.addEventListener('mousemove', (e) => {
+            const rect = renderer.domElement.getBoundingClientRect();
+            mouse.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
+            mouse.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
+
+            raycaster.setFromCamera(mouse, activeCamera);
+            const intersects = raycaster.intersectObjects(stateMeshes);
+
+            let newHovered = -1;
+            if (intersects.length > 0) {
+                const idx = stateMeshes.indexOf(intersects[0].object);
+                if (idx !== -1) newHovered = idx;
+            }
+
+            if (newHovered !== hoveredState) {
+                hoveredState = newHovered;
+                drawMaze();
+                updateReprView();
+            }
+        });
+
+        renderer.domElement.addEventListener('mouseleave', () => {
+            if (hoveredState !== -1) {
+                hoveredState = -1;
+                drawMaze();
+                updateReprView();
+            }
         });
 
         // Animation
