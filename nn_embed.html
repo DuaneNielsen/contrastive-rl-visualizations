@@ -1,0 +1,996 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Neural SGCRL - Embed</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: 'Segoe UI', system-ui, sans-serif;
+            background: #0a0a0f;
+            color: #e0e0e0;
+            overflow: hidden;
+        }
+        #container {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            grid-template-rows: 1fr 40px;
+            height: 100vh;
+            gap: 1px;
+            background: #2a2a3a;
+        }
+        .panel {
+            background: #12121a;
+            position: relative;
+            overflow: hidden;
+        }
+        #maze-panel {
+            padding-bottom: 15px;
+        }
+        .panel-title {
+            position: absolute;
+            top: 8px;
+            left: 8px;
+            background: rgba(0,0,0,0.8);
+            padding: 4px 10px;
+            border-radius: 4px;
+            font-size: 0.75em;
+            z-index: 10;
+        }
+        .neural-badge {
+            background: #aa5533;
+            padding: 2px 6px;
+            border-radius: 3px;
+            font-size: 0.7em;
+            margin-left: 6px;
+        }
+        #maze-canvas { width: 100%; height: 100%; }
+
+        /* Bottom taskbar */
+        #taskbar {
+            grid-column: 1 / -1;
+            background: #1a1a24;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 0 60px;
+            gap: 12px;
+            border-top: 1px solid #333;
+        }
+        #taskbar button {
+            background: #3355aa;
+            color: white;
+            border: none;
+            padding: 5px 12px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 0.75em;
+        }
+        #taskbar button:hover { background: #4466cc; }
+        #taskbar button.active { background: #44aa66; }
+
+        .taskbar-section {
+            display: flex;
+            align-items: center;
+            gap: 4px;
+        }
+        .taskbar-divider {
+            width: 1px;
+            height: 20px;
+            background: #444;
+            margin: 0 4px;
+        }
+        .taskbar-stats {
+            font-size: 0.7em;
+            color: #888;
+        }
+        .taskbar-stats span { color: #8abb9a; }
+
+        /* Colorbar */
+        .colorbar {
+            position: absolute;
+            right: 8px;
+            top: 50%;
+            transform: translateY(-50%);
+            width: 12px;
+            height: 120px;
+            border-radius: 3px;
+            background: linear-gradient(to bottom, #5a78a0, #8a7080, #b4645a);
+        }
+        .colorbar-label {
+            position: absolute;
+            right: 24px;
+            font-size: 0.6em;
+            color: #666;
+        }
+        .colorbar-label.top { top: 50%; transform: translateY(-80px); }
+        .colorbar-label.bottom { top: 50%; transform: translateY(70px); }
+    </style>
+</head>
+<body>
+    <div id="container">
+        <div class="panel" id="maze-panel">
+            <div class="panel-title">Maze: ψ-similarity<span class="neural-badge">Neural</span></div>
+            <canvas id="maze-canvas"></canvas>
+            <div class="colorbar"></div>
+            <div class="colorbar-label top">goal</div>
+            <div class="colorbar-label bottom">squeezed</div>
+        </div>
+        <div class="panel" id="repr-panel">
+            <div class="panel-title" id="repr-title">Representations</div>
+        </div>
+        <div id="taskbar">
+            <div class="taskbar-section">
+                <button id="btn-play">▶ Play</button>
+                <button id="btn-reset">Reset</button>
+            </div>
+            <div class="taskbar-divider"></div>
+            <div class="taskbar-section">
+                <button id="btn-view-pca3d" class="active">3D</button>
+                <button id="btn-view-pca2d">2D</button>
+                <button id="btn-view-magnitude">||ζ||</button>
+            </div>
+            <div class="taskbar-stats">
+                Ep: <span id="stat-episode">0</span> |
+                Success: <span id="stat-success-rate">0%</span>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.10.0/dist/tf.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+    <script>
+        tf.setBackend('cpu');
+
+        const MathUtils = {
+            dot(a, b) {
+                let sum = 0;
+                for (let i = 0; i < a.length; i++) sum += a[i] * b[i];
+                return sum;
+            },
+            normalize(v) {
+                let norm = 0;
+                for (let i = 0; i < v.length; i++) norm += v[i] * v[i];
+                norm = Math.sqrt(norm) + 1e-8;
+                for (let i = 0; i < v.length; i++) v[i] /= norm;
+            }
+        };
+        const { dot, normalize } = MathUtils;
+
+        // ============================================
+        // FOUR ROOMS ENVIRONMENT
+        // ============================================
+        class FourRoomsEnv {
+            constructor(height = 11, width = 11, goalPos = [10, 10], startPos = [0, 0]) {
+                this.height = height;
+                this.width = width;
+                this.numStates = height * width;
+                this.numActions = 5;
+                this.actions = [[0,0], [1,0], [-1,0], [0,1], [0,-1]];
+                this.goalState = this.posToState(goalPos[0], goalPos[1]);
+                this.startState = this.posToState(startPos[0], startPos[1]);
+                this.walls = this._buildWalls();
+            }
+            _buildWalls() {
+                const walls = [];
+                for (let i = 0; i < this.height; i++) {
+                    walls[i] = [];
+                    for (let j = 0; j < this.width; j++) walls[i][j] = 0;
+                }
+                for (let j = 0; j < this.width; j++) walls[Math.floor(this.height/2)][j] = 1;
+                for (let i = 0; i < this.height; i++) walls[i][Math.floor(this.width/2)] = 1;
+                const doorLen = 2;
+                for (let d = 0; d < doorLen; d++) {
+                    walls[Math.floor(this.height/2)][Math.floor(this.width/4) + d] = 0;
+                    walls[Math.floor(this.height/2)][Math.floor(3*this.width/4) + d] = 0;
+                    walls[Math.floor(this.height/4) + d][Math.floor(this.width/2)] = 0;
+                    walls[Math.floor(3*this.height/4) + d][Math.floor(this.width/2)] = 0;
+                }
+                return walls;
+            }
+            posToState(i, j) { return i * this.width + j; }
+            stateToPos(s) { return [Math.floor(s / this.width), s % this.width]; }
+            isWall(i, j) { return this.walls[i] && this.walls[i][j] === 1; }
+            step(state, action) {
+                const [i, j] = this.stateToPos(state);
+                const [di, dj] = this.actions[action];
+                const ni = i + di, nj = j + dj;
+                if (ni >= 0 && ni < this.height && nj >= 0 && nj < this.width && !this.isWall(ni, nj)) {
+                    return this.posToState(ni, nj);
+                }
+                return state;
+            }
+            isGoal(state) { return state === this.goalState; }
+            getStateInput(state) {
+                const onehot = new Array(this.numStates).fill(0);
+                onehot[state] = 1;
+                return onehot;
+            }
+        }
+
+        // ============================================
+        // NEURAL REPRESENTATION
+        // ============================================
+        class NeuralRepresentation {
+            constructor(env, repDim, hiddenUnits = 128, learningRate = 0.0005) {
+                this.env = env;
+                this.repDim = repDim;
+                this.hiddenUnits = hiddenUnits;
+                this.learningRate = learningRate;
+                this.inputDim = env.numStates;
+                this.goalState = env.goalState;
+                this.model = null;
+                this.optimizer = null;
+                this.psiGoal = null;
+                this.cachedPsi = null;
+            }
+            init() {
+                if (this.model) this.model.dispose();
+                const biasInit = tf.initializers.randomUniform({minval: 0, maxval: 0.1});
+                this.model = tf.sequential({
+                    layers: [
+                        tf.layers.dense({
+                            inputShape: [this.inputDim],
+                            units: this.hiddenUnits,
+                            activation: 'relu',
+                            kernelInitializer: 'glorotNormal',
+                            biasInitializer: biasInit
+                        }),
+                        tf.layers.dense({
+                            units: this.hiddenUnits,
+                            activation: 'relu',
+                            kernelInitializer: 'glorotNormal',
+                            biasInitializer: biasInit
+                        }),
+                        tf.layers.dense({
+                            units: this.repDim,
+                            activation: 'linear',
+                            kernelInitializer: tf.initializers.randomNormal({mean: 0, stddev: 0.001})
+                        })
+                    ]
+                });
+                this.optimizer = tf.train.adam(this.learningRate);
+                this._applySymmetricInit();
+                this.updateCache();
+            }
+            _applySymmetricInit() {
+                const outputLayer = this.model.layers[2];
+                const [kernel, bias] = outputLayer.getWeights();
+                const seedData = [];
+                for (let i = 0; i < this.repDim; i++) seedData.push((Math.random() - 0.5) * 2);
+                const seedNorm = Math.sqrt(seedData.reduce((s, v) => s + v*v, 0));
+                for (let i = 0; i < this.repDim; i++) seedData[i] /= seedNorm;
+                const newBias = tf.tensor1d(seedData.map(v => v * 10));
+                outputLayer.setWeights([kernel, newBias]);
+                newBias.dispose();
+            }
+            forward(inputs) {
+                return tf.tidy(() => {
+                    const raw = this.model.predict(inputs);
+                    const norm = tf.norm(raw, 2, 1, true);
+                    const safeNorm = tf.maximum(norm, 1e-8);
+                    return raw.div(safeNorm);
+                });
+            }
+            getRepresentation(state) { return this.cachedPsi[state]; }
+            getGoalRepresentation() { return this.psiGoal; }
+            updateCache() {
+                const inputs = [];
+                for (let s = 0; s < this.env.numStates; s++) inputs.push(this.env.getStateInput(s));
+                const inputTensor = tf.tensor2d(inputs);
+                const psiTensor = this.forward(inputTensor);
+                const psiData = psiTensor.arraySync();
+                this.cachedPsi = psiData;
+                this.psiGoal = psiData[this.goalState];
+                inputTensor.dispose();
+                psiTensor.dispose();
+            }
+            trainOnBatch(sBatch, spBatch) {
+                const sInputs = sBatch.map(s => this.env.getStateInput(s));
+                const spInputs = spBatch.map(s => this.env.getStateInput(s));
+                let lossValue = 0;
+                const sInputTensor = tf.tensor2d(sInputs);
+                const spInputTensor = tf.tensor2d(spInputs);
+                try {
+                    const { value: lossTensor, grads } = tf.variableGrads(() => {
+                        const psiS = this.forward(sInputTensor);
+                        const psiP = this.forward(spInputTensor);
+                        const logits = tf.matMul(psiS, psiP, false, true);
+                        const maxLogits = logits.max(0, true);
+                        const shifted = logits.sub(maxLogits);
+                        const expShifted = shifted.exp();
+                        const sumExp = expShifted.sum(0, true);
+                        const logSoftmax = shifted.sub(sumExp.log());
+                        const B = sBatch.length;
+                        const eye = tf.eye(B);
+                        const maskedLogSoftmax = logSoftmax.mul(eye);
+                        const diagSum = maskedLogSoftmax.sum();
+                        return diagSum.div(B).neg();
+                    });
+                    lossValue = lossTensor.dataSync()[0];
+                    if (!isNaN(lossValue) && isFinite(lossValue)) {
+                        const clippedGrads = {};
+                        for (const [name, grad] of Object.entries(grads)) {
+                            clippedGrads[name] = tf.clipByValue(grad, -1.0, 1.0);
+                        }
+                        this.optimizer.applyGradients(clippedGrads);
+                        Object.values(clippedGrads).forEach(g => g.dispose());
+                    }
+                    lossTensor.dispose();
+                    Object.values(grads).forEach(g => g.dispose());
+                } catch (e) { console.error('Training error:', e); }
+                sInputTensor.dispose();
+                spInputTensor.dispose();
+                this.updateCache();
+                return lossValue;
+            }
+            goalSimilarity(state) { return dot(this.getRepresentation(state), this.psiGoal); }
+        }
+
+        // ============================================
+        // SGCRL AGENT
+        // ============================================
+        class SGCRLAgent {
+            constructor(env, representation) {
+                this.env = env;
+                this.repr = representation;
+                this.replayCapacity = 200;
+                this.batchSize = 64;
+                this.gamma = 0.99;
+                this.entropyCoeff = 0.1;
+                this.maxSteps = 50;
+                this.replay = [];
+            }
+            init() {
+                this.repr.init();
+                this.replay = [];
+            }
+            selectAction(state) {
+                const psiGoal = this.repr.getGoalRepresentation();
+                const similarities = [];
+                for (let a = 0; a < this.env.numActions; a++) {
+                    const ns = this.env.step(state, a);
+                    similarities.push(dot(this.repr.getRepresentation(ns), psiGoal));
+                }
+                const invTemp = 1.0 / this.entropyCoeff;
+                const maxSim = Math.max(...similarities);
+                const expSims = similarities.map(s => Math.exp((s - maxSim) * invTemp));
+                const sumExp = expSims.reduce((a, b) => a + b, 0);
+                const probs = expSims.map(e => e / sumExp);
+                const r = Math.random();
+                let cumsum = 0;
+                for (let a = 0; a < this.env.numActions; a++) {
+                    cumsum += probs[a];
+                    if (r < cumsum) return a;
+                }
+                return this.env.numActions - 1;
+            }
+            collectEpisode() {
+                const traj = [this.env.startState];
+                let success = false;
+                for (let t = 0; t < this.maxSteps; t++) {
+                    const action = this.selectAction(traj[traj.length - 1]);
+                    const ns = this.env.step(traj[traj.length - 1], action);
+                    traj.push(ns);
+                    if (this.env.isGoal(ns)) { success = true; break; }
+                }
+                this.replay.push(traj);
+                if (this.replay.length > this.replayCapacity) this.replay.shift();
+                return { traj, success };
+            }
+            sampleBatch() {
+                const sBatch = [], spBatch = [];
+                for (let b = 0; b < this.batchSize; b++) {
+                    const trajIdx = Math.floor(Math.random() * this.replay.length);
+                    const traj = this.replay[trajIdx];
+                    if (traj.length < 2) continue;
+                    const i = Math.floor(Math.random() * (traj.length - 1));
+                    const remaining = traj.length - i - 1;
+                    if (remaining < 1) continue;
+                    const weights = [];
+                    for (let k = 0; k < remaining; k++) weights.push(Math.pow(this.gamma, k));
+                    const sumW = weights.reduce((a, b) => a + b, 0);
+                    const r = Math.random() * sumW;
+                    let cumsum = 0, offset = 1;
+                    for (let k = 0; k < remaining; k++) {
+                        cumsum += weights[k];
+                        if (r < cumsum) { offset = k + 1; break; }
+                    }
+                    sBatch.push(traj[i]);
+                    spBatch.push(traj[i + offset]);
+                }
+                return { sBatch, spBatch };
+            }
+            updateRepresentations() {
+                if (this.replay.length < 2) return 0;
+                const { sBatch, spBatch } = this.sampleBatch();
+                if (sBatch.length === 0) return 0;
+                return this.repr.trainOnBatch(sBatch, spBatch);
+            }
+        }
+
+        // ============================================
+        // INSTANTIATE
+        // ============================================
+        const REP_DIM = 64;
+        const env = new FourRoomsEnv();
+        const representation = new NeuralRepresentation(env, REP_DIM);
+        const agent = new SGCRLAgent(env, representation);
+
+        const HEIGHT = env.height, WIDTH = env.width;
+        const walls = env.walls;
+        const NUM_STATES = env.numStates;
+        const GOAL_STATE = env.goalState, START_STATE = env.startState;
+
+        function stateToPos(s) { return env.stateToPos(s); }
+        function goalSimilarity(state) { return representation.goalSimilarity(state); }
+
+        // ============================================
+        // MAZE VISUALIZATION
+        // ============================================
+        const mazeCanvas = document.getElementById('maze-canvas');
+        const mazeCtx = mazeCanvas.getContext('2d');
+        let currentTraj = [];
+        let currentTrajSuccess = false;
+        let hoveredState = -1;
+
+        function resizeMazeCanvas() {
+            const panel = document.getElementById('maze-panel');
+            mazeCanvas.width = panel.clientWidth;
+            mazeCanvas.height = panel.clientHeight;
+        }
+
+        function drawMaze() {
+            const cellW = mazeCanvas.width / WIDTH;
+            const cellH = mazeCanvas.height / HEIGHT;
+            mazeCtx.fillStyle = '#12121a';
+            mazeCtx.fillRect(0, 0, mazeCanvas.width, mazeCanvas.height);
+
+            for (let i = 0; i < HEIGHT; i++) {
+                for (let j = 0; j < WIDTH; j++) {
+                    const x = j * cellW;
+                    const y = (HEIGHT - 1 - i) * cellH;
+                    const s = env.posToState(i, j);
+                    const isHovered = s === hoveredState;
+
+                    if (walls[i][j] === 1) {
+                        mazeCtx.fillStyle = '#2a2a35';
+                    } else if (s === START_STATE) {
+                        mazeCtx.fillStyle = '#5a9a7a';
+                    } else {
+                        const sim = goalSimilarity(s);
+                        if (isNaN(sim)) {
+                            mazeCtx.fillStyle = '#555566';
+                        } else {
+                            const t = Math.max(0, Math.min(1, (sim + 1) / 2));
+                            const r = Math.floor(90 + 90 * (1 - t));
+                            const g = Math.floor(120 - 20 * (1 - t));
+                            const b = Math.floor(160 - 70 * (1 - t));
+                            mazeCtx.fillStyle = `rgb(${r}, ${g}, ${b})`;
+                        }
+                    }
+                    mazeCtx.fillRect(x + 1, y + 1, cellW - 2, cellH - 2);
+
+                    // Hover highlight
+                    if (isHovered) {
+                        mazeCtx.strokeStyle = '#ffcc44';
+                        mazeCtx.lineWidth = 2;
+                        mazeCtx.strokeRect(x + 2, y + 2, cellW - 4, cellH - 4);
+                    }
+                }
+            }
+
+            const [gi, gj] = stateToPos(GOAL_STATE);
+            const gx = (gj + 0.5) * cellW;
+            const gy = (HEIGHT - 1 - gi + 0.5) * cellH;
+            mazeCtx.fillStyle = '#6699bb';
+            mazeCtx.beginPath();
+            mazeCtx.arc(gx, gy, cellW * 0.3, 0, Math.PI * 2);
+            mazeCtx.fill();
+
+            if (currentTraj.length > 1) {
+                mazeCtx.strokeStyle = currentTrajSuccess ? '#6ab07a' : '#bba866';
+                mazeCtx.lineWidth = 2;
+                mazeCtx.beginPath();
+                for (let t = 0; t < currentTraj.length; t++) {
+                    const [ti, tj] = stateToPos(currentTraj[t]);
+                    const tx = (tj + 0.5) * cellW;
+                    const ty = (HEIGHT - 1 - ti + 0.5) * cellH;
+                    if (t === 0) mazeCtx.moveTo(tx, ty);
+                    else mazeCtx.lineTo(tx, ty);
+                }
+                mazeCtx.stroke();
+            }
+        }
+
+        // ============================================
+        // THREE.JS VISUALIZATION
+        // ============================================
+        const reprPanel = document.getElementById('repr-panel');
+        let viewMode = 'pca3d';
+
+        const scene = new THREE.Scene();
+        scene.background = new THREE.Color(0x12121a);
+
+        const aspect = reprPanel.clientWidth / reprPanel.clientHeight;
+        const frustumSize = 2.5;
+        const orthoCamera = new THREE.OrthographicCamera(
+            -frustumSize * aspect, frustumSize * aspect, frustumSize, -frustumSize, 0.1, 100
+        );
+        orthoCamera.position.set(0, 0, 5);
+
+        const perspCamera = new THREE.PerspectiveCamera(60, aspect, 0.1, 100);
+        perspCamera.position.set(2, 1.5, 2);
+
+        let activeCamera = perspCamera;
+
+        const renderer = new THREE.WebGLRenderer({ antialias: true });
+        renderer.setSize(reprPanel.clientWidth, reprPanel.clientHeight);
+        reprPanel.appendChild(renderer.domElement);
+
+        const controls = new THREE.OrbitControls(perspCamera, renderer.domElement);
+        controls.enableDamping = true;
+
+        const circleGeom = new THREE.BufferGeometry();
+        const circlePoints = [];
+        for (let angle = 0; angle <= Math.PI * 2; angle += 0.05) {
+            circlePoints.push(Math.sin(angle), Math.cos(angle), 0);
+        }
+        circleGeom.setAttribute('position', new THREE.Float32BufferAttribute(circlePoints, 3));
+        const circleLine = new THREE.Line(circleGeom, new THREE.LineBasicMaterial({ color: 0x666688, transparent: true, opacity: 0.6 }));
+        scene.add(circleLine);
+
+        const sphereWire = new THREE.Mesh(
+            new THREE.SphereGeometry(1, 24, 24),
+            new THREE.MeshBasicMaterial({ color: 0x333355, wireframe: true, transparent: true, opacity: 0.15 })
+        );
+        scene.add(sphereWire);
+
+        // Axes
+        const axesMat = new THREE.LineBasicMaterial({ color: 0x444466 });
+        const yAxisGeom = new THREE.BufferGeometry().setFromPoints([
+            new THREE.Vector3(0, -1.2, 0), new THREE.Vector3(0, 1.2, 0)
+        ]);
+        scene.add(new THREE.Line(yAxisGeom, axesMat));
+        const xAxisGeom = new THREE.BufferGeometry().setFromPoints([
+            new THREE.Vector3(-1.2, 0, 0), new THREE.Vector3(1.2, 0, 0)
+        ]);
+        scene.add(new THREE.Line(xAxisGeom, axesMat));
+        const zAxisGeom = new THREE.BufferGeometry().setFromPoints([
+            new THREE.Vector3(0, 0, -1.2), new THREE.Vector3(0, 0, 1.2)
+        ]);
+        const zAxis = new THREE.Line(zAxisGeom, axesMat);
+        scene.add(zAxis);
+
+        // Axis labels as sprites
+        function createTextSprite(text, color = '#888899') {
+            const canvas = document.createElement('canvas');
+            canvas.width = 128;
+            canvas.height = 64;
+            const ctx = canvas.getContext('2d');
+            ctx.font = 'bold 32px Arial';
+            ctx.fillStyle = color;
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.fillText(text, 64, 32);
+            const texture = new THREE.CanvasTexture(canvas);
+            const material = new THREE.SpriteMaterial({ map: texture, transparent: true });
+            const sprite = new THREE.Sprite(material);
+            sprite.scale.set(0.4, 0.2, 1);
+            return sprite;
+        }
+
+        // Y-axis label: c (cosine similarity)
+        const yLabel = createTextSprite('c');
+        yLabel.position.set(0.15, 1.35, 0);
+        scene.add(yLabel);
+
+        // X-axis label: ζ·PC₁ (for PCA modes) or ||ζ|| (for magnitude mode)
+        const xLabel = createTextSprite('ζ·PC₁');
+        xLabel.position.set(1.35, 0, 0);
+        scene.add(xLabel);
+
+        // Z-axis label: ζ·PC₂ (only for 3D mode)
+        const zLabel = createTextSprite('ζ·PC₂');
+        zLabel.position.set(0, 0, 1.35);
+        scene.add(zLabel);
+
+        // State meshes
+        const stateMeshes = [];
+        for (let s = 0; s < NUM_STATES; s++) {
+            const mesh = new THREE.Mesh(
+                new THREE.SphereGeometry(0.035, 8, 8),
+                new THREE.MeshBasicMaterial({ color: 0x4488ff })
+            );
+            scene.add(mesh);
+            stateMeshes.push(mesh);
+        }
+
+        // Trajectory path cylinders
+        const MAX_TRAJ_SEGMENTS = 60;
+        const trajCylinders = [];
+        const trajCylinderGeom = new THREE.CylinderGeometry(0.008, 0.008, 1, 8);
+
+        for (let i = 0; i < MAX_TRAJ_SEGMENTS; i++) {
+            const cyl = new THREE.Mesh(
+                trajCylinderGeom,
+                new THREE.MeshBasicMaterial({ color: 0x6ab07a, transparent: true, opacity: 0.7 })
+            );
+            cyl.visible = false;
+            scene.add(cyl);
+            trajCylinders.push(cyl);
+        }
+
+        // Helper to position cylinder between two points
+        function positionCylinder(cylinder, p1, p2) {
+            const mid = new THREE.Vector3().addVectors(p1, p2).multiplyScalar(0.5);
+            cylinder.position.copy(mid);
+            const dir = new THREE.Vector3().subVectors(p2, p1);
+            const length = dir.length();
+            cylinder.scale.set(1, length, 1);
+            const up = new THREE.Vector3(0, 1, 0);
+            const quat = new THREE.Quaternion().setFromUnitVectors(up, dir.normalize());
+            cylinder.quaternion.copy(quat);
+        }
+
+        // Hover highlight rings
+        const hoverRingInner = new THREE.Mesh(
+            new THREE.RingGeometry(0.042, 0.048, 32),
+            new THREE.MeshBasicMaterial({ color: 0xffcc44, transparent: true, opacity: 0, side: THREE.DoubleSide, depthTest: false })
+        );
+        hoverRingInner.renderOrder = 1001;
+        scene.add(hoverRingInner);
+
+        const hoverRingOuter = new THREE.Mesh(
+            new THREE.RingGeometry(0.046, 0.058, 32),
+            new THREE.MeshBasicMaterial({ color: 0xffaa22, transparent: true, opacity: 0, side: THREE.DoubleSide, depthTest: false })
+        );
+        hoverRingOuter.renderOrder = 1000;
+        scene.add(hoverRingOuter);
+
+        // Raycaster for hover detection
+        const raycaster = new THREE.Raycaster();
+        const mouse = new THREE.Vector2();
+
+        let prevPC1 = null, prevPC2 = null;
+
+        function computeZetaPCA() {
+            const zetas = [], stateIndices = [];
+            for (let s = 0; s < NUM_STATES; s++) {
+                const [i, j] = stateToPos(s);
+                if (walls[i][j] === 1) continue;
+                const c = goalSimilarity(s);
+                if (isNaN(c)) continue;
+                const psi = representation.getRepresentation(s);
+                const zeta = [];
+                for (let d = 0; d < REP_DIM; d++) {
+                    zeta.push(psi[d] - c * representation.psiGoal[d]);
+                }
+                zetas.push(zeta);
+                stateIndices.push(s);
+            }
+            if (zetas.length === 0) return { projections1: {}, projections2: {} };
+
+            const mean = new Array(REP_DIM).fill(0);
+            for (const z of zetas) for (let d = 0; d < REP_DIM; d++) mean[d] += z[d];
+            for (let d = 0; d < REP_DIM; d++) mean[d] /= zetas.length;
+            const centered = zetas.map(z => z.map((v, d) => v - mean[d]));
+
+            let pc1 = prevPC1 ? prevPC1.slice() : new Array(REP_DIM).fill(0).map(() => Math.random() - 0.5);
+            normalize(pc1);
+            for (let iter = 0; iter < 50; iter++) {
+                const newPc = new Array(REP_DIM).fill(0);
+                for (const z of centered) {
+                    const proj = dot(z, pc1);
+                    for (let d = 0; d < REP_DIM; d++) newPc[d] += proj * z[d];
+                }
+                normalize(newPc);
+                pc1 = newPc;
+            }
+            if (prevPC1 && dot(pc1, prevPC1) < 0) for (let d = 0; d < REP_DIM; d++) pc1[d] = -pc1[d];
+            prevPC1 = pc1.slice();
+
+            let pc2 = prevPC2 ? prevPC2.slice() : new Array(REP_DIM).fill(0).map(() => Math.random() - 0.5);
+            let proj1 = dot(pc2, pc1);
+            for (let d = 0; d < REP_DIM; d++) pc2[d] -= proj1 * pc1[d];
+            normalize(pc2);
+            for (let iter = 0; iter < 50; iter++) {
+                const newPc = new Array(REP_DIM).fill(0);
+                for (const z of centered) {
+                    const proj = dot(z, pc2);
+                    for (let d = 0; d < REP_DIM; d++) newPc[d] += proj * z[d];
+                }
+                proj1 = dot(newPc, pc1);
+                for (let d = 0; d < REP_DIM; d++) newPc[d] -= proj1 * pc1[d];
+                normalize(newPc);
+                pc2 = newPc;
+            }
+            if (prevPC2 && dot(pc2, prevPC2) < 0) for (let d = 0; d < REP_DIM; d++) pc2[d] = -pc2[d];
+            prevPC2 = pc2.slice();
+
+            const projections1 = {}, projections2 = {};
+            for (let i = 0; i < zetas.length; i++) {
+                projections1[stateIndices[i]] = dot(zetas[i], pc1);
+                projections2[stateIndices[i]] = dot(zetas[i], pc2);
+            }
+            return { projections1, projections2 };
+        }
+
+        function updateReprView() {
+            if (!representation.cachedPsi) return;
+
+            const is3D = viewMode === 'pca3d';
+            const isMagnitude = viewMode === 'magnitude';
+            circleLine.visible = viewMode === 'pca2d';
+            sphereWire.visible = is3D;
+            zAxis.visible = is3D;
+            zLabel.visible = is3D;
+
+            // Update x-axis label based on view mode
+            if (isMagnitude) {
+                xLabel.material.map.dispose();
+                xLabel.material.dispose();
+                const canvas = document.createElement('canvas');
+                canvas.width = 128;
+                canvas.height = 64;
+                const ctx = canvas.getContext('2d');
+                ctx.font = 'bold 32px Arial';
+                ctx.fillStyle = '#888899';
+                ctx.textAlign = 'center';
+                ctx.textBaseline = 'middle';
+                ctx.fillText('||ζ||', 64, 32);
+                const texture = new THREE.CanvasTexture(canvas);
+                xLabel.material = new THREE.SpriteMaterial({ map: texture, transparent: true });
+            } else {
+                xLabel.material.map.dispose();
+                xLabel.material.dispose();
+                const canvas = document.createElement('canvas');
+                canvas.width = 128;
+                canvas.height = 64;
+                const ctx = canvas.getContext('2d');
+                ctx.font = 'bold 32px Arial';
+                ctx.fillStyle = '#888899';
+                ctx.textAlign = 'center';
+                ctx.textBaseline = 'middle';
+                ctx.fillText('ζ·PC₁', 64, 32);
+                const texture = new THREE.CanvasTexture(canvas);
+                xLabel.material = new THREE.SpriteMaterial({ map: texture, transparent: true });
+            }
+
+            if (is3D) {
+                activeCamera = perspCamera;
+                controls.enabled = true;
+            } else {
+                activeCamera = orthoCamera;
+                controls.enabled = false;
+            }
+
+            let pcaData = null;
+            if (viewMode !== 'magnitude') pcaData = computeZetaPCA();
+
+            for (let s = 0; s < NUM_STATES; s++) {
+                const [i, j] = stateToPos(s);
+                if (walls[i][j] === 1) { stateMeshes[s].visible = false; continue; }
+                stateMeshes[s].visible = true;
+
+                const c = goalSimilarity(s);
+                if (isNaN(c)) { stateMeshes[s].visible = false; continue; }
+
+                let x = 0, y = c, z = 0;
+
+                if (viewMode === 'magnitude') {
+                    x = Math.sqrt(Math.max(0, 1 - c * c));
+                } else {
+                    x = pcaData.projections1[s] || 0;
+                    z = is3D ? (pcaData.projections2[s] || 0) : 0;
+                }
+
+                stateMeshes[s].position.set(x, y, z);
+
+                const t = (c + 1) / 2;
+                let color;
+                if (s === GOAL_STATE) color = 0x6699bb;
+                else if (s === START_STATE) color = 0x5a9a7a;
+                else {
+                    const r = Math.floor(90 + 90 * (1 - t));
+                    const g = Math.floor(120 - 20 * (1 - t));
+                    const b = Math.floor(160 - 70 * (1 - t));
+                    color = (r << 16) | (g << 8) | b;
+                }
+                stateMeshes[s].material.color.setHex(color);
+            }
+
+            // Update trajectory cylinders
+            const trajColor = currentTrajSuccess ? 0x6ab07a : 0xbba866;
+            for (let i = 0; i < MAX_TRAJ_SEGMENTS; i++) {
+                if (i < currentTraj.length - 1) {
+                    const s1 = currentTraj[i];
+                    const s2 = currentTraj[i + 1];
+                    const p1 = stateMeshes[s1].position;
+                    const p2 = stateMeshes[s2].position;
+                    positionCylinder(trajCylinders[i], p1, p2);
+                    trajCylinders[i].material.color.setHex(trajColor);
+                    trajCylinders[i].visible = true;
+                } else {
+                    trajCylinders[i].visible = false;
+                }
+            }
+
+            // Update hover rings
+            if (hoveredState !== -1 && stateMeshes[hoveredState].visible) {
+                hoverRingInner.position.copy(stateMeshes[hoveredState].position);
+                hoverRingInner.material.opacity = 0.9;
+                hoverRingInner.lookAt(activeCamera.position);
+
+                hoverRingOuter.position.copy(stateMeshes[hoveredState].position);
+                hoverRingOuter.material.opacity = 0.4;
+                hoverRingOuter.lookAt(activeCamera.position);
+            } else {
+                hoverRingInner.material.opacity = 0;
+                hoverRingOuter.material.opacity = 0;
+            }
+        }
+
+        function resizeReprView() {
+            const w = reprPanel.clientWidth, h = reprPanel.clientHeight;
+            const aspect = w / h;
+            orthoCamera.left = -frustumSize * aspect;
+            orthoCamera.right = frustumSize * aspect;
+            orthoCamera.updateProjectionMatrix();
+            perspCamera.aspect = aspect;
+            perspCamera.updateProjectionMatrix();
+            renderer.setSize(w, h);
+        }
+
+        // ============================================
+        // SIMULATION
+        // ============================================
+        let episode = 0, successCount = 0, isPlaying = false;
+
+        function runEpisode() {
+            const result = agent.collectEpisode();
+            currentTraj = result.traj;
+            currentTrajSuccess = result.success;
+            if (result.success) successCount++;
+            agent.updateRepresentations();
+            episode++;
+            updateStats();
+        }
+
+        function updateStats() {
+            document.getElementById('stat-episode').textContent = episode;
+            document.getElementById('stat-success-rate').textContent = episode > 0 ? Math.round(100 * successCount / episode) + '%' : '0%';
+        }
+
+        function reset() {
+            episode = 0;
+            successCount = 0;
+            currentTraj = [];
+            isPlaying = false;
+            agent.init();
+            prevPC1 = null;
+            prevPC2 = null;
+            updateStats();
+            drawMaze();
+            updateReprView();
+            document.getElementById('btn-play').textContent = '▶ Play';
+        }
+
+        // Controls
+        document.getElementById('btn-play').addEventListener('click', () => {
+            isPlaying = !isPlaying;
+            document.getElementById('btn-play').textContent = isPlaying ? '⏸ Pause' : '▶ Play';
+        });
+
+        document.getElementById('btn-reset').addEventListener('click', reset);
+
+        document.getElementById('btn-view-pca3d').addEventListener('click', () => {
+            viewMode = 'pca3d';
+            document.querySelectorAll('.taskbar-section button').forEach(b => b.classList.remove('active'));
+            document.getElementById('btn-view-pca3d').classList.add('active');
+            updateReprView();
+        });
+        document.getElementById('btn-view-pca2d').addEventListener('click', () => {
+            viewMode = 'pca2d';
+            document.querySelectorAll('.taskbar-section button').forEach(b => b.classList.remove('active'));
+            document.getElementById('btn-view-pca2d').classList.add('active');
+            updateReprView();
+        });
+        document.getElementById('btn-view-magnitude').addEventListener('click', () => {
+            viewMode = 'magnitude';
+            document.querySelectorAll('.taskbar-section button').forEach(b => b.classList.remove('active'));
+            document.getElementById('btn-view-magnitude').classList.add('active');
+            updateReprView();
+        });
+
+        // Maze hover handling
+        mazeCanvas.addEventListener('mousemove', (e) => {
+            const rect = mazeCanvas.getBoundingClientRect();
+            const mx = e.clientX - rect.left;
+            const my = e.clientY - rect.top;
+            const cellW = mazeCanvas.width / WIDTH;
+            const cellH = mazeCanvas.height / HEIGHT;
+            const j = Math.floor(mx / cellW);
+            const i = HEIGHT - 1 - Math.floor(my / cellH);
+
+            if (i >= 0 && i < HEIGHT && j >= 0 && j < WIDTH && walls[i][j] === 0) {
+                const newHovered = env.posToState(i, j);
+                if (newHovered !== hoveredState) {
+                    hoveredState = newHovered;
+                    drawMaze();
+                    updateReprView();
+                }
+            } else if (hoveredState !== -1) {
+                hoveredState = -1;
+                drawMaze();
+                updateReprView();
+            }
+        });
+
+        mazeCanvas.addEventListener('mouseleave', () => {
+            if (hoveredState !== -1) {
+                hoveredState = -1;
+                drawMaze();
+                updateReprView();
+            }
+        });
+
+        // Three.js hover handling
+        renderer.domElement.addEventListener('mousemove', (e) => {
+            const rect = renderer.domElement.getBoundingClientRect();
+            mouse.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
+            mouse.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
+
+            raycaster.setFromCamera(mouse, activeCamera);
+            const intersects = raycaster.intersectObjects(stateMeshes);
+
+            let newHovered = -1;
+            if (intersects.length > 0) {
+                const idx = stateMeshes.indexOf(intersects[0].object);
+                if (idx !== -1) newHovered = idx;
+            }
+
+            if (newHovered !== hoveredState) {
+                hoveredState = newHovered;
+                drawMaze();
+                updateReprView();
+            }
+        });
+
+        renderer.domElement.addEventListener('mouseleave', () => {
+            if (hoveredState !== -1) {
+                hoveredState = -1;
+                drawMaze();
+                updateReprView();
+            }
+        });
+
+        // Animation
+        let lastUpdate = 0;
+        function animate(time) {
+            requestAnimationFrame(animate);
+            if (isPlaying && time - lastUpdate > 150) {
+                runEpisode();
+                drawMaze();
+                updateReprView();
+                lastUpdate = time;
+            }
+            if (viewMode === 'pca3d') controls.update();
+            renderer.render(scene, activeCamera);
+        }
+
+        window.addEventListener('resize', () => {
+            resizeMazeCanvas();
+            resizeReprView();
+            drawMaze();
+            updateReprView();
+        });
+
+        resizeMazeCanvas();
+        reset();
+        animate(0);
+    </script>
+</body>
+</html>
