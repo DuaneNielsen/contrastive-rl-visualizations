@@ -15,6 +15,7 @@
         #container {
             display: grid;
             grid-template-columns: 1fr 1fr;
+            grid-template-rows: 1fr 40px;
             height: 100vh;
             gap: 1px;
             background: #2a2a3a;
@@ -23,6 +24,9 @@
             background: #12121a;
             position: relative;
             overflow: hidden;
+        }
+        #maze-panel {
+            padding-bottom: 15px;
         }
         .panel-title {
             position: absolute;
@@ -43,57 +47,45 @@
         }
         #maze-canvas { width: 100%; height: 100%; }
 
-        /* Floating controls */
-        #controls-toggle {
-            position: fixed;
-            bottom: 12px;
-            left: 12px;
+        /* Bottom taskbar */
+        #taskbar {
+            grid-column: 1 / -1;
+            background: #1a1a24;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 0 60px;
+            gap: 12px;
+            border-top: 1px solid #333;
+        }
+        #taskbar button {
             background: #3355aa;
             color: white;
             border: none;
-            padding: 8px 14px;
-            border-radius: 20px;
-            cursor: pointer;
-            font-size: 0.8em;
-            z-index: 100;
-            box-shadow: 0 2px 8px rgba(0,0,0,0.4);
-        }
-        #controls-toggle:hover { background: #4466cc; }
-
-        #controls-panel {
-            position: fixed;
-            bottom: 50px;
-            left: 12px;
-            background: rgba(18, 18, 26, 0.95);
-            padding: 12px;
-            border-radius: 8px;
-            z-index: 99;
-            display: none;
-            box-shadow: 0 4px 20px rgba(0,0,0,0.5);
-            border: 1px solid #333;
-            max-width: 200px;
-        }
-        #controls-panel.visible { display: block; }
-
-        #controls-panel button {
-            background: #3355aa;
-            color: white;
-            border: none;
-            padding: 6px 10px;
-            margin: 2px;
+            padding: 5px 12px;
             border-radius: 4px;
             cursor: pointer;
             font-size: 0.75em;
         }
-        #controls-panel button:hover { background: #4466cc; }
-        #controls-panel button.active { background: #44aa66; }
+        #taskbar button:hover { background: #4466cc; }
+        #taskbar button.active { background: #44aa66; }
 
-        .mini-stats {
+        .taskbar-section {
+            display: flex;
+            align-items: center;
+            gap: 4px;
+        }
+        .taskbar-divider {
+            width: 1px;
+            height: 20px;
+            background: #444;
+            margin: 0 4px;
+        }
+        .taskbar-stats {
             font-size: 0.7em;
-            margin-top: 8px;
             color: #888;
         }
-        .mini-stats span { color: #8abb9a; }
+        .taskbar-stats span { color: #8abb9a; }
 
         /* Colorbar */
         .colorbar {
@@ -114,9 +106,6 @@
         }
         .colorbar-label.top { top: 50%; transform: translateY(-80px); }
         .colorbar-label.bottom { top: 50%; transform: translateY(70px); }
-
-        .view-btns { margin-top: 6px; }
-        .view-btns button { padding: 4px 8px; font-size: 0.7em; }
     </style>
 </head>
 <body>
@@ -131,23 +120,21 @@
         <div class="panel" id="repr-panel">
             <div class="panel-title" id="repr-title">Representations</div>
         </div>
-    </div>
-
-    <button id="controls-toggle">▶ Play</button>
-
-    <div id="controls-panel" class="visible">
-        <div>
-            <button id="btn-play">▶ Play</button>
-            <button id="btn-reset">Reset</button>
-        </div>
-        <div class="view-btns">
-            <button id="btn-view-pca3d" class="active">3D</button>
-            <button id="btn-view-pca2d">2D</button>
-            <button id="btn-view-magnitude">||ζ||</button>
-        </div>
-        <div class="mini-stats">
-            Ep: <span id="stat-episode">0</span> |
-            Success: <span id="stat-success-rate">0%</span>
+        <div id="taskbar">
+            <div class="taskbar-section">
+                <button id="btn-play">▶ Play</button>
+                <button id="btn-reset">Reset</button>
+            </div>
+            <div class="taskbar-divider"></div>
+            <div class="taskbar-section">
+                <button id="btn-view-pca3d" class="active">3D</button>
+                <button id="btn-view-pca2d">2D</button>
+                <button id="btn-view-magnitude">||ζ||</button>
+            </div>
+            <div class="taskbar-stats">
+                Ep: <span id="stat-episode">0</span> |
+                Success: <span id="stat-success-rate">0%</span>
+            </div>
         </div>
     </div>
 
@@ -447,6 +434,7 @@
         const mazeCtx = mazeCanvas.getContext('2d');
         let currentTraj = [];
         let currentTrajSuccess = false;
+        let hoveredState = -1;
 
         function resizeMazeCanvas() {
             const panel = document.getElementById('maze-panel');
@@ -465,6 +453,8 @@
                     const x = j * cellW;
                     const y = (HEIGHT - 1 - i) * cellH;
                     const s = env.posToState(i, j);
+                    const isHovered = s === hoveredState;
+
                     if (walls[i][j] === 1) {
                         mazeCtx.fillStyle = '#2a2a35';
                     } else if (s === START_STATE) {
@@ -482,6 +472,13 @@
                         }
                     }
                     mazeCtx.fillRect(x + 1, y + 1, cellW - 2, cellH - 2);
+
+                    // Hover highlight
+                    if (isHovered) {
+                        mazeCtx.strokeStyle = '#ffcc44';
+                        mazeCtx.lineWidth = 2;
+                        mazeCtx.strokeRect(x + 2, y + 2, cellW - 4, cellH - 4);
+                    }
                 }
             }
 
@@ -567,6 +564,40 @@
         const zAxis = new THREE.Line(zAxisGeom, axesMat);
         scene.add(zAxis);
 
+        // Axis labels as sprites
+        function createTextSprite(text, color = '#888899') {
+            const canvas = document.createElement('canvas');
+            canvas.width = 128;
+            canvas.height = 64;
+            const ctx = canvas.getContext('2d');
+            ctx.font = 'bold 32px Arial';
+            ctx.fillStyle = color;
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.fillText(text, 64, 32);
+            const texture = new THREE.CanvasTexture(canvas);
+            const material = new THREE.SpriteMaterial({ map: texture, transparent: true });
+            const sprite = new THREE.Sprite(material);
+            sprite.scale.set(0.4, 0.2, 1);
+            return sprite;
+        }
+
+        // Y-axis label: c (cosine similarity)
+        const yLabel = createTextSprite('c');
+        yLabel.position.set(0.15, 1.35, 0);
+        scene.add(yLabel);
+
+        // X-axis label: ζ·PC₁ (for PCA modes) or ||ζ|| (for magnitude mode)
+        const xLabel = createTextSprite('ζ·PC₁');
+        xLabel.position.set(1.35, 0, 0);
+        scene.add(xLabel);
+
+        // Z-axis label: ζ·PC₂ (only for 3D mode)
+        const zLabel = createTextSprite('ζ·PC₂');
+        zLabel.position.set(0, 0, 1.35);
+        scene.add(zLabel);
+
+        // State meshes
         const stateMeshes = [];
         for (let s = 0; s < NUM_STATES; s++) {
             const mesh = new THREE.Mesh(
@@ -576,6 +607,52 @@
             scene.add(mesh);
             stateMeshes.push(mesh);
         }
+
+        // Trajectory path cylinders
+        const MAX_TRAJ_SEGMENTS = 60;
+        const trajCylinders = [];
+        const trajCylinderGeom = new THREE.CylinderGeometry(0.008, 0.008, 1, 8);
+
+        for (let i = 0; i < MAX_TRAJ_SEGMENTS; i++) {
+            const cyl = new THREE.Mesh(
+                trajCylinderGeom,
+                new THREE.MeshBasicMaterial({ color: 0x6ab07a, transparent: true, opacity: 0.7 })
+            );
+            cyl.visible = false;
+            scene.add(cyl);
+            trajCylinders.push(cyl);
+        }
+
+        // Helper to position cylinder between two points
+        function positionCylinder(cylinder, p1, p2) {
+            const mid = new THREE.Vector3().addVectors(p1, p2).multiplyScalar(0.5);
+            cylinder.position.copy(mid);
+            const dir = new THREE.Vector3().subVectors(p2, p1);
+            const length = dir.length();
+            cylinder.scale.set(1, length, 1);
+            const up = new THREE.Vector3(0, 1, 0);
+            const quat = new THREE.Quaternion().setFromUnitVectors(up, dir.normalize());
+            cylinder.quaternion.copy(quat);
+        }
+
+        // Hover highlight rings
+        const hoverRingInner = new THREE.Mesh(
+            new THREE.RingGeometry(0.042, 0.048, 32),
+            new THREE.MeshBasicMaterial({ color: 0xffcc44, transparent: true, opacity: 0, side: THREE.DoubleSide, depthTest: false })
+        );
+        hoverRingInner.renderOrder = 1001;
+        scene.add(hoverRingInner);
+
+        const hoverRingOuter = new THREE.Mesh(
+            new THREE.RingGeometry(0.046, 0.058, 32),
+            new THREE.MeshBasicMaterial({ color: 0xffaa22, transparent: true, opacity: 0, side: THREE.DoubleSide, depthTest: false })
+        );
+        hoverRingOuter.renderOrder = 1000;
+        scene.add(hoverRingOuter);
+
+        // Raycaster for hover detection
+        const raycaster = new THREE.Raycaster();
+        const mouse = new THREE.Vector2();
 
         let prevPC1 = null, prevPC2 = null;
 
@@ -645,8 +722,42 @@
             if (!representation.cachedPsi) return;
 
             const is3D = viewMode === 'pca3d';
+            const isMagnitude = viewMode === 'magnitude';
             circleLine.visible = viewMode === 'pca2d';
             sphereWire.visible = is3D;
+            zAxis.visible = is3D;
+            zLabel.visible = is3D;
+
+            // Update x-axis label based on view mode
+            if (isMagnitude) {
+                xLabel.material.map.dispose();
+                xLabel.material.dispose();
+                const canvas = document.createElement('canvas');
+                canvas.width = 128;
+                canvas.height = 64;
+                const ctx = canvas.getContext('2d');
+                ctx.font = 'bold 32px Arial';
+                ctx.fillStyle = '#888899';
+                ctx.textAlign = 'center';
+                ctx.textBaseline = 'middle';
+                ctx.fillText('||ζ||', 64, 32);
+                const texture = new THREE.CanvasTexture(canvas);
+                xLabel.material = new THREE.SpriteMaterial({ map: texture, transparent: true });
+            } else {
+                xLabel.material.map.dispose();
+                xLabel.material.dispose();
+                const canvas = document.createElement('canvas');
+                canvas.width = 128;
+                canvas.height = 64;
+                const ctx = canvas.getContext('2d');
+                ctx.font = 'bold 32px Arial';
+                ctx.fillStyle = '#888899';
+                ctx.textAlign = 'center';
+                ctx.textBaseline = 'middle';
+                ctx.fillText('ζ·PC₁', 64, 32);
+                const texture = new THREE.CanvasTexture(canvas);
+                xLabel.material = new THREE.SpriteMaterial({ map: texture, transparent: true });
+            }
 
             if (is3D) {
                 activeCamera = perspCamera;
@@ -689,6 +800,36 @@
                     color = (r << 16) | (g << 8) | b;
                 }
                 stateMeshes[s].material.color.setHex(color);
+            }
+
+            // Update trajectory cylinders
+            const trajColor = currentTrajSuccess ? 0x6ab07a : 0xbba866;
+            for (let i = 0; i < MAX_TRAJ_SEGMENTS; i++) {
+                if (i < currentTraj.length - 1) {
+                    const s1 = currentTraj[i];
+                    const s2 = currentTraj[i + 1];
+                    const p1 = stateMeshes[s1].position;
+                    const p2 = stateMeshes[s2].position;
+                    positionCylinder(trajCylinders[i], p1, p2);
+                    trajCylinders[i].material.color.setHex(trajColor);
+                    trajCylinders[i].visible = true;
+                } else {
+                    trajCylinders[i].visible = false;
+                }
+            }
+
+            // Update hover rings
+            if (hoveredState !== -1 && stateMeshes[hoveredState].visible) {
+                hoverRingInner.position.copy(stateMeshes[hoveredState].position);
+                hoverRingInner.material.opacity = 0.9;
+                hoverRingInner.lookAt(activeCamera.position);
+
+                hoverRingOuter.position.copy(stateMeshes[hoveredState].position);
+                hoverRingOuter.material.opacity = 0.4;
+                hoverRingOuter.lookAt(activeCamera.position);
+            } else {
+                hoverRingInner.material.opacity = 0;
+                hoverRingOuter.material.opacity = 0;
             }
         }
 
@@ -735,49 +876,98 @@
             drawMaze();
             updateReprView();
             document.getElementById('btn-play').textContent = '▶ Play';
-            document.getElementById('controls-toggle').textContent = '▶ Play';
         }
 
-        const controlsPanel = document.getElementById('controls-panel');
-        document.getElementById('controls-toggle').addEventListener('click', () => {
-            if (!controlsPanel.classList.contains('visible')) {
-                controlsPanel.classList.add('visible');
-            } else {
-                isPlaying = !isPlaying;
-                const txt = isPlaying ? '⏸ Pause' : '▶ Play';
-                document.getElementById('btn-play').textContent = txt;
-                document.getElementById('controls-toggle').textContent = txt;
-            }
-        });
-
+        // Controls
         document.getElementById('btn-play').addEventListener('click', () => {
             isPlaying = !isPlaying;
-            const txt = isPlaying ? '⏸ Pause' : '▶ Play';
-            document.getElementById('btn-play').textContent = txt;
-            document.getElementById('controls-toggle').textContent = txt;
+            document.getElementById('btn-play').textContent = isPlaying ? '⏸ Pause' : '▶ Play';
         });
 
         document.getElementById('btn-reset').addEventListener('click', reset);
 
         document.getElementById('btn-view-pca3d').addEventListener('click', () => {
             viewMode = 'pca3d';
-            document.querySelectorAll('.view-btns button').forEach(b => b.classList.remove('active'));
+            document.querySelectorAll('.taskbar-section button').forEach(b => b.classList.remove('active'));
             document.getElementById('btn-view-pca3d').classList.add('active');
             updateReprView();
         });
         document.getElementById('btn-view-pca2d').addEventListener('click', () => {
             viewMode = 'pca2d';
-            document.querySelectorAll('.view-btns button').forEach(b => b.classList.remove('active'));
+            document.querySelectorAll('.taskbar-section button').forEach(b => b.classList.remove('active'));
             document.getElementById('btn-view-pca2d').classList.add('active');
             updateReprView();
         });
         document.getElementById('btn-view-magnitude').addEventListener('click', () => {
             viewMode = 'magnitude';
-            document.querySelectorAll('.view-btns button').forEach(b => b.classList.remove('active'));
+            document.querySelectorAll('.taskbar-section button').forEach(b => b.classList.remove('active'));
             document.getElementById('btn-view-magnitude').classList.add('active');
             updateReprView();
         });
 
+        // Maze hover handling
+        mazeCanvas.addEventListener('mousemove', (e) => {
+            const rect = mazeCanvas.getBoundingClientRect();
+            const mx = e.clientX - rect.left;
+            const my = e.clientY - rect.top;
+            const cellW = mazeCanvas.width / WIDTH;
+            const cellH = mazeCanvas.height / HEIGHT;
+            const j = Math.floor(mx / cellW);
+            const i = HEIGHT - 1 - Math.floor(my / cellH);
+
+            if (i >= 0 && i < HEIGHT && j >= 0 && j < WIDTH && walls[i][j] === 0) {
+                const newHovered = env.posToState(i, j);
+                if (newHovered !== hoveredState) {
+                    hoveredState = newHovered;
+                    drawMaze();
+                    updateReprView();
+                }
+            } else if (hoveredState !== -1) {
+                hoveredState = -1;
+                drawMaze();
+                updateReprView();
+            }
+        });
+
+        mazeCanvas.addEventListener('mouseleave', () => {
+            if (hoveredState !== -1) {
+                hoveredState = -1;
+                drawMaze();
+                updateReprView();
+            }
+        });
+
+        // Three.js hover handling
+        renderer.domElement.addEventListener('mousemove', (e) => {
+            const rect = renderer.domElement.getBoundingClientRect();
+            mouse.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
+            mouse.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
+
+            raycaster.setFromCamera(mouse, activeCamera);
+            const intersects = raycaster.intersectObjects(stateMeshes);
+
+            let newHovered = -1;
+            if (intersects.length > 0) {
+                const idx = stateMeshes.indexOf(intersects[0].object);
+                if (idx !== -1) newHovered = idx;
+            }
+
+            if (newHovered !== hoveredState) {
+                hoveredState = newHovered;
+                drawMaze();
+                updateReprView();
+            }
+        });
+
+        renderer.domElement.addEventListener('mouseleave', () => {
+            if (hoveredState !== -1) {
+                hoveredState = -1;
+                drawMaze();
+                updateReprView();
+            }
+        });
+
+        // Animation
         let lastUpdate = 0;
         function animate(time) {
             requestAnimationFrame(animate);
