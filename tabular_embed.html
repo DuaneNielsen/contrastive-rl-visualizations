@@ -569,6 +569,33 @@
             stateMeshes.push(mesh);
         }
 
+        // Trajectory path cylinders
+        const MAX_TRAJ_SEGMENTS = 60;
+        const trajCylinders = [];
+        const trajCylinderGeom = new THREE.CylinderGeometry(0.008, 0.008, 1, 8);
+
+        for (let i = 0; i < MAX_TRAJ_SEGMENTS; i++) {
+            const cyl = new THREE.Mesh(
+                trajCylinderGeom,
+                new THREE.MeshBasicMaterial({ color: 0x6ab07a, transparent: true, opacity: 0.7 })
+            );
+            cyl.visible = false;
+            scene.add(cyl);
+            trajCylinders.push(cyl);
+        }
+
+        // Helper to position cylinder between two points
+        function positionCylinder(cylinder, p1, p2) {
+            const mid = new THREE.Vector3().addVectors(p1, p2).multiplyScalar(0.5);
+            cylinder.position.copy(mid);
+            const dir = new THREE.Vector3().subVectors(p2, p1);
+            const length = dir.length();
+            cylinder.scale.set(1, length, 1);
+            const up = new THREE.Vector3(0, 1, 0);
+            const quat = new THREE.Quaternion().setFromUnitVectors(up, dir.normalize());
+            cylinder.quaternion.copy(quat);
+        }
+
         let prevPC1 = null, prevPC2 = null;
 
         function computeZetaPCA() {
@@ -711,6 +738,22 @@
                     color = (r << 16) | (g << 8) | b;
                 }
                 stateMeshes[s].material.color.setHex(color);
+            }
+
+            // Update trajectory cylinders
+            const trajColor = currentTrajSuccess ? 0x6ab07a : 0xbba866;
+            for (let i = 0; i < MAX_TRAJ_SEGMENTS; i++) {
+                if (i < currentTraj.length - 1) {
+                    const s1 = currentTraj[i];
+                    const s2 = currentTraj[i + 1];
+                    const p1 = stateMeshes[s1].position;
+                    const p2 = stateMeshes[s2].position;
+                    positionCylinder(trajCylinders[i], p1, p2);
+                    trajCylinders[i].material.color.setHex(trajColor);
+                    trajCylinders[i].visible = true;
+                } else {
+                    trajCylinders[i].visible = false;
+                }
             }
         }
 
